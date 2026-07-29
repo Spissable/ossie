@@ -24,12 +24,12 @@ on:
     branches: [ "main" ]
     paths:
       - 'converters/lightdash/**'
-      - '.github/**'    
+      - '.github/workflows/converter-lightdash-ci.yml'    
   pull_request:
     branches: [ "main" ]
     paths:
       - 'converters/lightdash/**'
-      - '.github/**'    
+      - '.github/workflows/converter-lightdash-ci.yml'    
 
 jobs:
   build:
