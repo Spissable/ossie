@@ -29,7 +29,7 @@ from ossie import (
 from ossie_dbt.converter_issues import ConverterResult
 from ossie_dbt.expression_utils import (
     _extract_agg_info,
-    _get_raw_inner_col,
+    _get_dataset_qualifier,
     _strip_qualifier,
     _try_parse_ratio,
 )
@@ -182,7 +182,7 @@ class OSIToMSIConverter:
         1. primary_key → PRIMARY entity
         2. unique_keys → UNIQUE entity
         3. foreign key (from relationship) → FOREIGN entity
-        4. dimension.is_time → TIME dimension (granularity defaults to DAY)
+        4. effective time-dimension role → TIME dimension (granularity defaults to DAY)
         5. fallback → CATEGORICAL dimension
 
         Aggregation info lives on metrics (`metric_aggregation_params`), not on
@@ -227,7 +227,7 @@ class OSIToMSIConverter:
                 )
             )
             return
-        if field.dimension is not None and field.dimension.is_time:
+        if field.is_time_dimension():
             # Ossie carries no granularity metadata; default to DAY.
             dimensions.append(
                 PydanticDimension(
@@ -369,11 +369,12 @@ class OSIToMSIConverter:
         For unqualified references the datasets are scanned for a matching field name.
         Falls back to the first dataset's name if no match is found.
         """
-        # Check for a dataset qualifier in the raw expression (e.g. "orders.amount")
-        raw_inner = _get_raw_inner_col(raw_expr_str)
-        if raw_inner and "." in raw_inner:
-            ds_name, _ = raw_inner.rsplit(".", 1)
-            return ds_name
+        # Check for a dataset qualifier in the raw expression (e.g. "orders.amount").
+        # Parse column references instead of splitting the rendered inner expression,
+        # which may be a compound CASE expression for SUM_BOOLEAN metrics.
+        dataset_qualifier = _get_dataset_qualifier(raw_expr_str)
+        if dataset_qualifier:
+            return dataset_qualifier
 
         # Scan datasets for a field whose name or expression matches the bare column
         for dataset in datasets:
