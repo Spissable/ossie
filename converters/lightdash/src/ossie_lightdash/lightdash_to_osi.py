@@ -49,6 +49,7 @@ from ossie_lightdash.converter_issues import (
     ConverterIssueType,
     ConverterResult,
 )
+from ossie_lightdash.datatype_utils import lightdash_type_to_datatype
 from ossie_lightdash.expression_utils import (
     build_aggregation,
     lightdash_sql_to_osi,
@@ -62,8 +63,6 @@ LIGHTDASH_VENDOR_NAME = "lightdash"
 # expressions cannot express faithfully (currently ``percentile``).
 _STRUCTURAL_METRIC_KEYS = {"sql", "description"}
 _STRUCTURAL_DIMENSION_KEYS = {"label", "sql"}
-
-_TIME_DIMENSION_TYPES = {"date", "timestamp"}
 
 _JOIN_PAIR_RE = re.compile(
     r"\$\{(\w+)\.(\w+)\}\s*=\s*\$\{(\w+)\.(\w+)\}",
@@ -198,15 +197,18 @@ class LightdashToOSIConverter:
 
         expression = column_name
         dimension: Optional[OSIDimension] = None
+        datatype = None
         label: Optional[str] = None
         extension_data: Dict[str, Any] = {}
         if dimension_meta is not None:
             label = dimension_meta.get("label")
             if dimension_meta.get("sql"):
                 expression = lightdash_sql_to_osi(dimension_meta["sql"], dataset_name)
-            dimension = OSIDimension(
-                is_time=dimension_meta.get("type") in _TIME_DIMENSION_TYPES
-            )
+            datatype = lightdash_type_to_datatype(dimension_meta.get("type"))
+            # `is_time` is a role marker in Ossie, not a type: Lightdash has no
+            # equivalent, so it is left unset rather than inferred from the type
+            # (the type itself is carried by `datatype`).
+            dimension = OSIDimension()
             extension_data = {
                 key: value
                 for key, value in dimension_meta.items()
@@ -217,6 +219,7 @@ class LightdashToOSIConverter:
             name=column_name,
             expression=_ansi(expression),
             dimension=dimension,
+            datatype=datatype,
             label=label,
             description=column.get("description"),
             custom_extensions=_lightdash_extension(extension_data) or None,

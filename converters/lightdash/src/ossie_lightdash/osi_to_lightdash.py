@@ -37,6 +37,7 @@ from ossie_lightdash.converter_issues import (
     ConverterIssueType,
     ConverterResult,
 )
+from ossie_lightdash.datatype_utils import datatype_to_lightdash_type, is_temporal
 from ossie_lightdash.expression_utils import (
     osi_sql_to_lightdash,
     parse_simple_aggregation,
@@ -168,8 +169,30 @@ class OSIToLightdashConverter:
             dimension: Dict[str, Any] = {}
             if field.label:
                 dimension["label"] = field.label
-            if field.dimension is not None and field.dimension.is_time:
-                dimension["type"] = "date"
+            if field.dimension is not None:
+                # Only dimension fields carry a Lightdash type: emitting one for
+                # a measure-only field would turn it into a dimension on import.
+                lightdash_type = datatype_to_lightdash_type(field.datatype)
+                if lightdash_type is not None:
+                    dimension["type"] = lightdash_type
+                elif field.dimension.is_time:
+                    # No datatype to translate, but the field is declared as a
+                    # time axis: `date` is the closest Lightdash type.
+                    dimension["type"] = "date"
+            if (
+                field.dimension is not None
+                and field.dimension.is_time
+                and not is_temporal(field.datatype)
+                and field.datatype is not None
+            ):
+                # A non-temporal datatype flagged as a time axis (e.g. a year
+                # stored as Integer) has no Lightdash equivalent.
+                issues.append(
+                    ConverterIssue(
+                        issue_type=ConverterIssueType.TIME_ROLE_NOT_REPRESENTABLE,
+                        element_name=field.name,
+                    )
+                )
             expression = _pick_expression(field.expression, self._dialect)
             if expression and expression != field.name:
                 dimension["sql"] = osi_sql_to_lightdash(expression, dataset.name)

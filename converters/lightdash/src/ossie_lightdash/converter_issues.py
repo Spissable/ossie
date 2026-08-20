@@ -39,6 +39,9 @@ class ConverterIssueType(Enum):
     # Import: a model-level metric without `sql` has no expressible OSI
     # expression and is skipped.
     METRIC_SQL_MISSING = "METRIC_SQL_MISSING"
+    # Export: a field is marked as a time-axis role (`dimension.is_time`) that
+    # its datatype does not already imply; Lightdash has no equivalent marker.
+    TIME_ROLE_NOT_REPRESENTABLE = "TIME_ROLE_NOT_REPRESENTABLE"
     # Export: a custom extension from another vendor cannot be carried into
     # Lightdash meta (it remains in the OSI document itself).
     FOREIGN_EXTENSION_IGNORED = "FOREIGN_EXTENSION_IGNORED"

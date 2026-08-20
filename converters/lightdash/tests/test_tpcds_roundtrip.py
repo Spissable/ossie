@@ -28,7 +28,7 @@ from pathlib import Path
 
 import yaml
 
-from ossie import OSIDocument
+from ossie import OSIDataType, OSIDocument
 
 from ossie_lightdash import (
     ConverterIssueType,
@@ -68,23 +68,62 @@ class TestTpcdsRoundtrip:
         }
         assert roundtripped_sources == original_sources
 
-    def test_fields_and_dimension_flags_are_preserved(self):
+    def test_fields_and_dimension_markers_are_preserved(self):
         original, _, reimported = _roundtrip()
         for original_dataset, roundtripped_dataset in zip(
             original.semantic_model[0].datasets,
             reimported.output.semantic_model[0].datasets,
         ):
             original_fields = {
-                field.name: (field.dimension is not None and field.dimension.is_time,
-                             field.dimension is not None)
+                field.name: field.dimension is not None
                 for field in original_dataset.fields or []
             }
             roundtripped_fields = {
-                field.name: (field.dimension is not None and field.dimension.is_time,
-                             field.dimension is not None)
+                field.name: field.dimension is not None
                 for field in roundtripped_dataset.fields or []
             }
             assert roundtripped_fields == original_fields
+
+    def test_datatype_categories_survive_the_round_trip(self):
+        """Lightdash types are coarser than Ossie datatypes, so a round-trip
+        preserves the category (temporal / numeric / string / boolean) rather
+        than the exact member (e.g. Integer comes back as Decimal)."""
+        categories = {
+            OSIDataType.STRING: "string",
+            OSIDataType.BOOLEAN: "boolean",
+            OSIDataType.INTEGER: "number",
+            OSIDataType.DECIMAL: "number",
+            OSIDataType.FLOAT: "number",
+            OSIDataType.DATE: "date",
+            OSIDataType.DATE_TIME: "timestamp",
+            OSIDataType.DATE_TIME_TZ: "timestamp",
+        }
+        original, _, reimported = _roundtrip()
+        for original_dataset, roundtripped_dataset in zip(
+            original.semantic_model[0].datasets,
+            reimported.output.semantic_model[0].datasets,
+        ):
+            roundtripped_by_name = {
+                field.name: field for field in roundtripped_dataset.fields or []
+            }
+            for field in original_dataset.fields or []:
+                # Measure-only fields have no Lightdash dimension to carry a
+                # type, so their datatype is not expected to survive.
+                if field.datatype not in categories or field.dimension is None:
+                    continue
+                roundtripped = roundtripped_by_name[field.name]
+                assert categories.get(roundtripped.datatype) == categories[
+                    field.datatype
+                ], field.name
+
+    def test_time_role_marker_is_not_carried_into_lightdash(self):
+        """`is_time` is an Ossie role marker with no Lightdash equivalent, so the
+        import direction leaves it unset instead of inferring one."""
+        _, _, reimported = _roundtrip()
+        for dataset in reimported.output.semantic_model[0].datasets:
+            for field in dataset.fields or []:
+                if field.dimension is not None:
+                    assert field.dimension.is_time is None, field.name
 
     def test_single_dataset_metrics_survive_with_expressions(self):
         original, exported, reimported = _roundtrip()

@@ -17,6 +17,8 @@
 
 import json
 
+from ossie import OSIDataType
+
 from ossie_lightdash import ConverterIssueType, LightdashToOSIConverter
 
 SCHEMA_YML = {
@@ -124,8 +126,21 @@ class TestLightdashToOSI:
         field = result.output.semantic_model[0].datasets[0].fields[0]
         assert field.name == "order_date"
         assert field.label == "Order date"
-        assert field.dimension is not None and field.dimension.is_time
         assert field.description == "Date the order was placed"
+        assert field.dimension is not None
+        # The Lightdash type becomes a datatype; `is_time` is an Ossie role
+        # marker with no Lightdash source, so it stays unset.
+        assert field.datatype is OSIDataType.DATE
+        assert field.dimension.is_time is None
+
+    def test_dimension_types_become_datatypes(self):
+        result = LightdashToOSIConverter().convert(SCHEMA_YML, schema="marts")
+        by_name = {
+            field.name: field
+            for field in result.output.semantic_model[0].datasets[0].fields
+        }
+        assert by_name["status"].datatype is OSIDataType.STRING
+        assert by_name["order_date"].datatype is OSIDataType.DATE
 
     def test_typed_metric_becomes_aggregation_expression(self):
         result = LightdashToOSIConverter().convert(SCHEMA_YML, schema="marts")

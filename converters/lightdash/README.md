@@ -43,7 +43,9 @@ ossie-lightdash import schema.yml semantic_model.json --database analytics_db --
 | `dataset` | dbt model (`name` = table part of `source`) |
 | `dataset.source` | assembled on import from `--database` / `--schema` / model name |
 | `field` (no `dimension`) | plain column entry |
-| `field` with `dimension` | `columns[].meta.dimension` (`is_time` ↔ `type: date/timestamp`; an empty `dimension: {}` marks a categorical dimension) |
+| `field` with `dimension` | `columns[].meta.dimension` (an empty `dimension: {}` marks a dimension with no extra attributes) |
+| `field.datatype` | `meta.dimension.type` (`String`→`string`, `Integer`/`Decimal`/`Float`→`number`, `Date`→`date`, `DateTime`/`DateTimeTz`→`timestamp`, `Boolean`→`boolean`, `Time`/`Opaque`→`string`); on import `number` maps back to `Decimal` |
+| `field.dimension.is_time` | *not carried* — it is a role marker (a field can be a time axis without a temporal datatype, e.g. a year stored as `Integer`) and Lightdash has no equivalent |
 | `field.label` / `.description` | `meta.dimension.label` / column `description` |
 | `field.expression` (≠ column name) | `meta.dimension.sql` (`dataset.col` ↔ `${TABLE}.col`) |
 | `metric` with single-aggregation expression (`SUM(ds.col)`, `COUNT(DISTINCT ds.col)`, ...) | column-level `meta.metrics.<name>` with a typed metric (`sum`, `count_distinct`, ...) |
@@ -81,6 +83,14 @@ Omitting `--schema` as well is reported as a `SOURCE_UNQUALIFIED` issue.
   name-stable round-trip is not guaranteed.
 - **Relationships with mismatched `from_columns` / `to_columns` lengths are
   skipped on export** with a `RELATIONSHIP_COLUMNS_MISMATCHED` issue.
+- **Datatypes round-trip by category, not by exact type**: Lightdash types are
+  coarser than Ossie datatypes, so `Integer` comes back as `Decimal` and
+  `DateTimeTz` as `DateTime`.
+- **A measure-only field (no `dimension`) loses its `datatype`**: Lightdash
+  carries types on dimensions only, so there is nowhere to put it.
+- **`dimension.is_time` is not carried**, and a field whose datatype is not
+  temporal but is flagged as a time axis is reported with a
+  `TIME_ROLE_NOT_REPRESENTABLE` issue on export.
 - **`ai_context` is not carried** into Lightdash meta.
 - **Model-level Lightdash meta beyond `metrics` and `joins`** (`label`,
   `group_details`, `sql_filter`, `order_fields_by`, column
