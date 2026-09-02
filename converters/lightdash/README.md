@@ -32,8 +32,8 @@ translates between that shape and Ossie.
   base of Lightdash metrics.
 
 ```
-ossie-lightdash export semantic_model.yaml schema.yml
-ossie-lightdash import schema.yml semantic_model.json --database analytics_db --schema marts
+ossie-lightdash export semantic_model.yaml schema.yml --dialect BIGQUERY
+ossie-lightdash import schema.yml semantic_model.json --database analytics_db --schema marts --dialect BIGQUERY
 ```
 
 ## Mapping
@@ -50,14 +50,19 @@ ossie-lightdash import schema.yml semantic_model.json --database analytics_db --
 | `field.expression` (≠ column name) | `meta.dimension.sql` (`dataset.col` ↔ `${TABLE}.col`) |
 | `metric` that is one aggregation over a column (`SUM(ds.col)`, `COUNT(DISTINCT ds.col)`, `SUM(DISTINCT ds.col)`, `PERCENTILE_CONT(0.9) WITHIN GROUP (ORDER BY ds.col)`, ...) | column-level `meta.metrics.<name>` with a typed metric (`sum`, `count_distinct`, `sum_distinct`, `percentile` + `percentile: 90`, ...) |
 | `metric` that is one aggregation over any other expression (`AVG(CASE WHEN ds.status = 'done' THEN 1 ELSE 0 END)`) | model-level `meta.metrics.<name>` with the typed metric and the operand as `sql` |
-| `metric` with any other single-dataset expression | model-level `meta.metrics.<name>` with `type: number` + `sql` |
+| `metric` with any other expression | model-level `meta.metrics.<name>` with `type: number` + `sql`, on the dataset that joins every other dataset the expression references (`${joined_model.col}`) |
 | `relationship` | `meta.joins` (`sql_on` built from / parsed into column pairs); the `alias` and other join attributes (`relationship`, `type`, `fields`, ...) travel in the relationship's `lightdash` extension, and a dataset joined more than once from the same model is aliased on export |
 | `${TABLE}.col`, `${col}`, `${other_model.col}` in Lightdash SQL | `dataset.col` / `other_model.col`; `${alias.col}` is flattened onto the aliased model, `${metric}` is replaced by that metric's expression |
 | Lightdash presentation attributes (`label`, `format`, `round`, `compact`, `group_label`, `hidden`, ...) | `custom_extensions` with `vendor_name: "lightdash"`; on export the extension data is overlaid onto the generated definition (structural keys — `sql`/`label` on dimensions, `sql`/`description` on metrics and `type`/`percentile` on metrics whose expression is a recognised aggregation, `join`/`sql_on` on joins — are protected and cannot be overridden) |
 
-Expressions are written under the `ANSI_SQL` dialect. Warehouse-specific
-dialects (e.g. `BIGQUERY`) can be added once the surrounding tooling resolves
-them.
+## Dialects
+
+Lightdash SQL is written for the project's warehouse, so `import --dialect`
+labels the emitted expressions with that warehouse's Ossie dialect
+(`BIGQUERY`, `SNOWFLAKE`, `DATABRICKS`); warehouses without an Ossie dialect
+(Postgres, Redshift, ...) keep the default `ANSI_SQL`. `export --dialect`
+prefers that dialect, falls back to `ANSI_SQL`, and takes the first available
+dialect with a `DIALECT_UNAVAILABLE` issue when an expression offers neither.
 
 ## Recommended source shape for dbt-native flows
 
@@ -70,9 +75,14 @@ Omitting `--schema` as well is reported as a `SOURCE_UNQUALIFIED` issue.
 
 ## Known limitations
 
-- **Cross-dataset metrics are dropped on export** (with a
-  `CROSS_DATASET_METRIC_DROPPED` issue): a Lightdash model metric cannot
-  reference other tables.
+- **A metric spanning datasets none of which joins all the others is
+  dropped on export** (`CROSS_DATASET_METRIC_DROPPED`): Lightdash resolves
+  `${other.column}` only through the joins the hosting model declares, never
+  transitively. A field expression referencing an unjoined dataset is emitted
+  as-is with a `FIELD_REFERENCE_UNJOINED` issue.
+- **A dataset joined more than once** is referenced through its first join
+  when an expression names it (`date_dim.year` → `${date_dim.year}` rather
+  than the aliased second join).
 - **Parameter and user-attribute references** (`${lightdash.parameters.x}`,
   `${ld.user.email}`) have no Ossie form: a dimension or metric whose SQL uses
   them is skipped on import with an `EXPRESSION_NOT_PORTABLE` issue.

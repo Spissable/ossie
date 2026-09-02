@@ -167,13 +167,26 @@ def qualifier_of(column_ref: str) -> Optional[str]:
     return None
 
 
-def ossie_sql_to_lightdash(expression: str, dataset: str) -> str:
-    """Rewrite ``dataset.column`` references into Lightdash's ``${TABLE}.column``."""
-    return re.sub(
-        rf"\b{re.escape(dataset)}\.(\w+)",
-        r"${TABLE}.\1",
-        expression,
-    )
+def ossie_sql_to_lightdash(
+    expression: str, dataset: str, references: Optional[Dict[str, str]] = None
+) -> str:
+    """Rewrite Ossie column references into Lightdash references.
+
+    ``dataset.column`` becomes ``${TABLE}.column``; a dataset in ``references``
+    (joined from ``dataset``) becomes ``${<join reference>.column}``, where the
+    join reference is the joined model's name or its alias.
+    """
+    names = {dataset: None, **(references or {})}
+
+    def replace(match: "re.Match[str]") -> str:
+        name, column = match.group(1), match.group(2)
+        reference = names[name]
+        if reference is None:
+            return f"${{TABLE}}.{column}"
+        return f"${{{reference}.{column}}}"
+
+    alternatives = "|".join(re.escape(name) for name in names)
+    return re.sub(rf"\b({alternatives})\.(\w+)", replace, expression)
 
 
 def has_non_portable_reference(sql: str) -> bool:

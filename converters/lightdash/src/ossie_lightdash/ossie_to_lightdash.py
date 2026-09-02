@@ -30,7 +30,14 @@ Ossie-derived definition.
 import json
 from typing import Any, Dict, List, Optional, Set, Tuple
 
-from ossie import OssieDataset, OssieDialect, OssieDocument, OssieMetric, OssieSemanticModel
+from ossie import (
+    OssieDataset,
+    OssieDialect,
+    OssieDocument,
+    OssieExpression,
+    OssieMetric,
+    OssieSemanticModel,
+)
 
 from ossie_lightdash.converter_issues import (
     ConverterIssue,
@@ -59,13 +66,10 @@ _PROTECTED_METRIC_KEYS = {"sql", "description"}
 _PROTECTED_AGGREGATION_KEYS = _PROTECTED_METRIC_KEYS | {"type", "percentile"}
 _PROTECTED_JOIN_KEYS = {"join", "sql_on", "alias"}
 
-
-def _pick_expression(ossie_expression: Any, dialect: OssieDialect) -> str:
-    """Return the expression for the preferred dialect (fallback: first available)."""
-    for dialect_expression in ossie_expression.dialects:
-        if dialect_expression.dialect is dialect:
-            return dialect_expression.expression
-    return ossie_expression.dialects[0].expression if ossie_expression.dialects else ""
+# Joins a dataset declares, keyed by the joined dataset: the name Lightdash SQL
+# uses to reference it (the joined model, or its alias). The first join to a
+# dataset wins when it is joined more than once.
+JoinReferences = Dict[str, str]
 
 
 def _lightdash_extension_data(element: Any, issues: List[ConverterIssue]) -> Dict[str, Any]:
@@ -98,7 +102,12 @@ def _model_name_for(dataset: OssieDataset) -> str:
 
 
 class OssieToLightdashConverter:
-    """Converts an OssieDocument into a Lightdash-flavoured dbt schema.yml dict."""
+    """Converts an OssieDocument into a Lightdash-flavoured dbt schema.yml dict.
+
+    ``dialect`` is the expression dialect to prefer (the project's warehouse);
+    ``ANSI_SQL`` is the fallback, and an expression offering neither is taken
+    from its first dialect with a ``DIALECT_UNAVAILABLE`` issue.
+    """
 
     def __init__(self, dialect: OssieDialect = OssieDialect.ANSI_SQL) -> None:
         self._dialect = dialect
@@ -110,6 +119,26 @@ class OssieToLightdashConverter:
             models.extend(self._convert_semantic_model(semantic_model, issues))
         return ConverterResult(output={"version": 2, "models": models}, issues=issues)
 
+    def _pick_expression(
+        self, expression: OssieExpression, element_name: str, issues: List[ConverterIssue]
+    ) -> str:
+        by_dialect = {
+            dialect_expression.dialect: dialect_expression.expression
+            for dialect_expression in expression.dialects
+        }
+        for dialect in (self._dialect, OssieDialect.ANSI_SQL):
+            if dialect in by_dialect:
+                return by_dialect[dialect]
+        if not expression.dialects:
+            return ""
+        issues.append(
+            ConverterIssue(
+                issue_type=ConverterIssueType.DIALECT_UNAVAILABLE,
+                element_name=element_name,
+            )
+        )
+        return expression.dialects[0].expression
+
     def _convert_semantic_model(
         self, semantic_model: OssieSemanticModel, issues: List[ConverterIssue]
     ) -> List[Dict[str, Any]]:
@@ -119,28 +148,49 @@ class OssieToLightdashConverter:
             dataset.name: _model_name_for(dataset) for dataset in datasets
         }
 
+        # Joins are planned first: field and metric expressions may reference
+        # other datasets only through the joins their own dataset declares.
+        joins_by_dataset, references_by_dataset = self._plan_joins(
+            semantic_model, model_name_by_dataset, issues
+        )
+
         models_by_dataset: Dict[str, Dict[str, Any]] = {}
         columns_by_dataset: Dict[str, Dict[str, Dict[str, Any]]] = {}
         for dataset in datasets:
-            model, columns = self._convert_dataset(dataset, issues)
+            model, columns = self._convert_dataset(
+                dataset, dataset_names, references_by_dataset.get(dataset.name, {}), issues
+            )
             models_by_dataset[dataset.name] = model
             columns_by_dataset[dataset.name] = columns
 
         for metric in semantic_model.metrics or []:
             self._convert_metric(
                 metric,
-                dataset_names,
+                [dataset.name for dataset in datasets],
                 models_by_dataset,
                 columns_by_dataset,
+                references_by_dataset,
                 issues,
             )
 
+        for dataset_name, joins in joins_by_dataset.items():
+            models_by_dataset[dataset_name].setdefault("meta", {})["joins"] = joins
+
+        return [models_by_dataset[dataset.name] for dataset in datasets]
+
+    def _plan_joins(
+        self,
+        semantic_model: OssieSemanticModel,
+        model_name_by_dataset: Dict[str, str],
+        issues: List[ConverterIssue],
+    ) -> Tuple[Dict[str, List[Dict[str, Any]]], Dict[str, JoinReferences]]:
+        joins_by_dataset: Dict[str, List[Dict[str, Any]]] = {}
+        references_by_dataset: Dict[str, JoinReferences] = {}
         joined_pairs: Set[Tuple[str, str]] = set()
         for relationship in semantic_model.relationships or []:
-            from_model = models_by_dataset.get(relationship.from_dataset)
-            to_model_name = model_name_by_dataset.get(relationship.to)
             from_model_name = model_name_by_dataset.get(relationship.from_dataset)
-            if from_model is None or to_model_name is None:
+            to_model_name = model_name_by_dataset.get(relationship.to)
+            if from_model_name is None or to_model_name is None:
                 continue
             if len(relationship.from_columns) != len(relationship.to_columns):
                 issues.append(
@@ -177,13 +227,18 @@ class OssieToLightdashConverter:
                     if key not in _PROTECTED_JOIN_KEYS
                 }
             )
-            joins = from_model.setdefault("meta", {}).setdefault("joins", [])
-            joins.append(join)
-
-        return [models_by_dataset[dataset.name] for dataset in datasets]
+            joins_by_dataset.setdefault(relationship.from_dataset, []).append(join)
+            references_by_dataset.setdefault(relationship.from_dataset, {}).setdefault(
+                relationship.to, join_reference
+            )
+        return joins_by_dataset, references_by_dataset
 
     def _convert_dataset(
-        self, dataset: OssieDataset, issues: List[ConverterIssue]
+        self,
+        dataset: OssieDataset,
+        dataset_names: Set[str],
+        references: JoinReferences,
+        issues: List[ConverterIssue],
     ) -> tuple:
         columns_by_name: Dict[str, Dict[str, Any]] = {}
         for field in dataset.fields or []:
@@ -218,9 +273,22 @@ class OssieToLightdashConverter:
                         element_name=field.name,
                     )
                 )
-            expression = _pick_expression(field.expression, self._dialect)
+            expression = self._pick_expression(field.expression, field.name, issues)
             if expression and expression != field.name:
-                dimension["sql"] = ossie_sql_to_lightdash(expression, dataset.name)
+                unjoined = referenced_datasets(expression, dataset_names) - {
+                    dataset.name,
+                    *references,
+                }
+                if unjoined:
+                    issues.append(
+                        ConverterIssue(
+                            issue_type=ConverterIssueType.FIELD_REFERENCE_UNJOINED,
+                            element_name=field.name,
+                        )
+                    )
+                dimension["sql"] = ossie_sql_to_lightdash(
+                    expression, dataset.name, references
+                )
             dimension.update(
                 {
                     key: value
@@ -244,15 +312,18 @@ class OssieToLightdashConverter:
     def _convert_metric(
         self,
         metric: OssieMetric,
-        dataset_names: set,
+        dataset_names: List[str],
         models_by_dataset: Dict[str, Dict[str, Any]],
         columns_by_dataset: Dict[str, Dict[str, Dict[str, Any]]],
+        references_by_dataset: Dict[str, JoinReferences],
         issues: List[ConverterIssue],
     ) -> None:
-        expression = _pick_expression(metric.expression, self._dialect)
+        expression = self._pick_expression(metric.expression, metric.name, issues)
         extension_data = _lightdash_extension_data(metric, issues)
 
-        target_dataset = self._resolve_target_dataset(expression, dataset_names)
+        target_dataset = self._resolve_target_dataset(
+            expression, dataset_names, references_by_dataset
+        )
         if target_dataset is None:
             issues.append(
                 ConverterIssue(
@@ -261,6 +332,7 @@ class OssieToLightdashConverter:
                 )
             )
             return
+        references = references_by_dataset.get(target_dataset, {})
 
         definition: Dict[str, Any] = {}
         if metric.description:
@@ -281,13 +353,13 @@ class OssieToLightdashConverter:
             ):
                 target_column = strip_qualifier(inner)
             else:
-                definition["sql"] = ossie_sql_to_lightdash(inner, target_dataset)
+                definition["sql"] = ossie_sql_to_lightdash(inner, target_dataset, references)
             if parsed.percentile is not None:
                 definition["percentile"] = parsed.percentile
             protected = _PROTECTED_AGGREGATION_KEYS
         else:
             definition["type"] = extension_data.get("type", "number")
-            definition["sql"] = ossie_sql_to_lightdash(expression, target_dataset)
+            definition["sql"] = ossie_sql_to_lightdash(expression, target_dataset, references)
             protected = _PROTECTED_METRIC_KEYS
 
         definition.update(
@@ -308,10 +380,25 @@ class OssieToLightdashConverter:
             metrics[metric.name] = definition
 
     @staticmethod
-    def _resolve_target_dataset(expression: str, dataset_names: set) -> Optional[str]:
-        referenced = referenced_datasets(expression, dataset_names)
+    def _resolve_target_dataset(
+        expression: str,
+        dataset_names: List[str],
+        references_by_dataset: Dict[str, JoinReferences],
+    ) -> Optional[str]:
+        """The dataset whose model hosts the metric.
+
+        A metric spanning several datasets lives on the one that joins all the
+        others directly: Lightdash resolves ``${other.column}`` only against
+        the joins the hosting model declares, never transitively.
+        """
+        referenced = referenced_datasets(expression, set(dataset_names))
+        if len(referenced) == 0:
+            return dataset_names[0] if len(dataset_names) == 1 else None
         if len(referenced) == 1:
             return next(iter(referenced))
-        if len(referenced) == 0 and len(dataset_names) == 1:
-            return next(iter(dataset_names))
+        for name in dataset_names:
+            if name in referenced and referenced - {name} <= set(
+                references_by_dataset.get(name, {})
+            ):
+                return name
         return None

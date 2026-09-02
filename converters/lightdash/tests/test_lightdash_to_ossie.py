@@ -17,7 +17,7 @@
 
 import json
 
-from ossie import OssieDataType
+from ossie import OssieDataType, OssieDialect
 
 from ossie_lightdash import ConverterIssueType, LightdashToOssieConverter
 
@@ -464,3 +464,12 @@ class TestLightdashToOssie:
             and issue.element_name == "sold_year"
             for issue in result.issues
         )
+
+    def test_expressions_carry_the_warehouse_dialect(self):
+        result = LightdashToOssieConverter(OssieDialect.BIGQUERY).convert(
+            SCHEMA_YML, schema="marts"
+        )
+        metric = _metric(result.output, "total_amount")
+        assert [d.dialect for d in metric.expression.dialects] == [OssieDialect.BIGQUERY]
+        field = result.output.semantic_model[0].datasets[0].fields[0]
+        assert field.expression.dialects[0].dialect is OssieDialect.BIGQUERY

@@ -25,7 +25,7 @@ from typing import List, Optional
 
 import yaml
 
-from ossie import OssieDocument
+from ossie import OssieDialect, OssieDocument
 from ossie_lightdash.lightdash_to_ossie import LightdashToOssieConverter
 from ossie_lightdash.ossie_to_lightdash import OssieToLightdashConverter
 
@@ -51,6 +51,12 @@ def main(argv: Optional[List[str]] = None) -> int:
     )
     export_parser.add_argument("input", type=Path)
     export_parser.add_argument("output", type=Path)
+    export_parser.add_argument(
+        "--dialect",
+        choices=[dialect.name for dialect in OssieDialect],
+        default=OssieDialect.ANSI_SQL.name,
+        help="preferred expression dialect (falls back to ANSI_SQL)",
+    )
 
     import_parser = subparsers.add_parser(
         "import", help="Lightdash dbt schema.yml -> Ossie document (.json/.yaml)"
@@ -62,18 +68,26 @@ def main(argv: Optional[List[str]] = None) -> int:
     import_parser.add_argument(
         "--semantic-model-name", default="lightdash_semantic_model"
     )
+    import_parser.add_argument(
+        "--dialect",
+        choices=[dialect.name for dialect in OssieDialect],
+        default=OssieDialect.ANSI_SQL.name,
+        help="dialect the Lightdash SQL is written in (the project's warehouse)",
+    )
 
     args = parser.parse_args(argv)
 
     if args.command == "export":
-        result = OssieToLightdashConverter().convert(_read_document(args.input))
+        result = OssieToLightdashConverter(OssieDialect[args.dialect]).convert(
+            _read_document(args.input)
+        )
         args.output.write_text(
             yaml.safe_dump(result.output, sort_keys=False, allow_unicode=True),
             encoding="utf-8",
         )
     else:
         schema_yml = yaml.safe_load(args.input.read_text(encoding="utf-8"))
-        result = LightdashToOssieConverter().convert(
+        result = LightdashToOssieConverter(OssieDialect[args.dialect]).convert(
             schema_yml,
             database=args.database,
             schema=args.schema,

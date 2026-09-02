@@ -69,11 +69,9 @@ _JOIN_PAIR_RE = re.compile(
 )
 
 
-def _ansi(expression: str) -> OssieExpression:
+def _expression(expression: str, dialect: OssieDialect) -> OssieExpression:
     return OssieExpression(
-        dialects=[
-            OssieDialectExpression(dialect=OssieDialect.ANSI_SQL, expression=expression)
-        ]
+        dialects=[OssieDialectExpression(dialect=dialect, expression=expression)]
     )
 
 
@@ -186,7 +184,15 @@ class _ModelContext:
 
 
 class LightdashToOssieConverter:
-    """Converts a Lightdash-flavoured dbt schema.yml dict into an OssieDocument."""
+    """Converts a Lightdash-flavoured dbt schema.yml dict into an OssieDocument.
+
+    Lightdash SQL is written for the project's warehouse; ``dialect`` labels the
+    emitted expressions accordingly (``ANSI_SQL`` when the warehouse has no
+    Ossie dialect, e.g. Postgres or Redshift).
+    """
+
+    def __init__(self, dialect: OssieDialect = OssieDialect.ANSI_SQL) -> None:
+        self._dialect = dialect
 
     def convert(
         self,
@@ -324,7 +330,7 @@ class LightdashToOssieConverter:
 
         return OssieField(
             name=column_name,
-            expression=_ansi(expression),
+            expression=_expression(expression, self._dialect),
             dimension=dimension,
             datatype=datatype,
             label=label,
@@ -332,8 +338,8 @@ class LightdashToOssieConverter:
             custom_extensions=_lightdash_extension(extension_data) or None,
         )
 
-    @staticmethod
     def _convert_metric(
+        self,
         metric_name: str,
         definition: Dict[str, Any],
         column: Optional[str],
@@ -365,7 +371,7 @@ class LightdashToOssieConverter:
         }
         return OssieMetric(
             name=metric_name,
-            expression=_ansi(expression),
+            expression=_expression(expression, self._dialect),
             description=definition.get("description"),
             custom_extensions=_lightdash_extension(extension_data) or None,
         )

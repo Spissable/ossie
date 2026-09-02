@@ -54,6 +54,12 @@ class ConverterIssueType(Enum):
     # Import: a `${alias.column}` reference to an aliased join was rewritten to
     # the joined dataset; Ossie has no join aliases, so the join path is lost.
     ALIAS_REFERENCE_FLATTENED = "ALIAS_REFERENCE_FLATTENED"
+    # Export: neither the requested dialect nor ANSI_SQL is available for an
+    # expression; the first available dialect is used instead.
+    DIALECT_UNAVAILABLE = "DIALECT_UNAVAILABLE"
+    # Export: a field expression references a dataset the field's dataset does
+    # not join, so Lightdash cannot resolve the reference.
+    FIELD_REFERENCE_UNJOINED = "FIELD_REFERENCE_UNJOINED"
 
 
 @dataclass(frozen=True)

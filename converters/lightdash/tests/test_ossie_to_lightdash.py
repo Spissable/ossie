@@ -185,13 +185,112 @@ class TestOssieToLightdash:
         assert metric["format"] == "percent"
         assert metric["round"] == 1
 
-    def test_cross_dataset_metric_is_dropped_with_issue(self):
+    def test_metric_over_a_joined_dataset_lives_on_the_joining_model(self):
         result = OssieToLightdashConverter().convert(_document())
-        assert any(
+        metric = _model(result.output, "orders")["meta"]["metrics"]["cross_dataset"]
+        assert metric == {
+            "type": "number",
+            "sql": "SUM(${TABLE}.amount) / COUNT(${customers.customer_id})",
+        }
+        assert not any(
             issue.issue_type is ConverterIssueType.CROSS_DATASET_METRIC_DROPPED
-            and issue.element_name == "cross_dataset"
             for issue in result.issues
         )
+
+    def test_metric_over_an_unjoined_dataset_is_dropped_with_issue(self):
+        document = _document()
+        tampered = document.model_copy(deep=True)
+        # customers does not join orders, so no model can host the metric.
+        tampered.semantic_model[0] = tampered.semantic_model[0].model_copy(
+            update={
+                "relationships": [],
+                "metrics": [
+                    *tampered.semantic_model[0].metrics,
+                    OssieMetric(
+                        name="reversed",
+                        expression=_ansi("COUNT(customers.customer_id) / SUM(orders.amount)"),
+                    ),
+                ],
+            }
+        )
+        result = OssieToLightdashConverter().convert(tampered)
+        assert "metrics" not in _model(result.output, "customers").get("meta", {})
+        assert {
+            issue.element_name
+            for issue in result.issues
+            if issue.issue_type is ConverterIssueType.CROSS_DATASET_METRIC_DROPPED
+        } == {"cross_dataset", "reversed"}
+
+    def test_field_references_resolve_through_declared_joins(self):
+        document = _document()
+        tampered = document.model_copy(deep=True)
+        orders = tampered.semantic_model[0].datasets[0]
+        orders.fields.append(
+            OssieField(
+                name="customer_key",
+                expression=_ansi("UPPER(customers.customer_id)"),
+                dimension=OssieDimension(),
+            )
+        )
+        customers = tampered.semantic_model[0].datasets[1]
+        customers.fields.append(
+            OssieField(
+                name="last_order_status",
+                expression=_ansi("orders.status"),
+                dimension=OssieDimension(),
+            )
+        )
+        result = OssieToLightdashConverter().convert(tampered)
+        joined = _column(_model(result.output, "orders"), "customer_key")
+        assert joined["meta"]["dimension"]["sql"] == "UPPER(${customers.customer_id})"
+        unjoined = _column(_model(result.output, "customers"), "last_order_status")
+        assert unjoined["meta"]["dimension"]["sql"] == "orders.status"
+        assert [
+            issue.element_name
+            for issue in result.issues
+            if issue.issue_type is ConverterIssueType.FIELD_REFERENCE_UNJOINED
+        ] == ["last_order_status"]
+
+    def test_preferred_dialect_falls_back_to_ansi_then_reports(self):
+        document = _document()
+        tampered = document.model_copy(deep=True)
+        orders = tampered.semantic_model[0].datasets[0]
+        orders.fields[1] = OssieField(
+            name="status",
+            expression=OssieExpression(
+                dialects=[
+                    OssieDialectExpression(dialect=OssieDialect.ANSI_SQL, expression="status"),
+                    OssieDialectExpression(
+                        dialect=OssieDialect.BIGQUERY, expression="LOWER(status)"
+                    ),
+                ]
+            ),
+            dimension=OssieDimension(),
+        )
+        orders.fields.append(
+            OssieField(
+                name="snowflake_only",
+                expression=OssieExpression(
+                    dialects=[
+                        OssieDialectExpression(
+                            dialect=OssieDialect.SNOWFLAKE, expression="status::VARCHAR"
+                        )
+                    ]
+                ),
+                dimension=OssieDimension(),
+            )
+        )
+        result = OssieToLightdashConverter(OssieDialect.BIGQUERY).convert(tampered)
+        model = _model(result.output, "orders")
+        assert _column(model, "status")["meta"]["dimension"]["sql"] == "LOWER(status)"
+        assert (
+            _column(model, "snowflake_only")["meta"]["dimension"]["sql"] == "status::VARCHAR"
+        )
+        assert [
+            issue.element_name
+            for issue in result.issues
+            if issue.issue_type is ConverterIssueType.DIALECT_UNAVAILABLE
+        ] == ["snowflake_only"]
 
     def test_foreign_extension_is_reported(self):
         result = OssieToLightdashConverter().convert(_document())
