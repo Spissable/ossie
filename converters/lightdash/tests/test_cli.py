@@ -30,7 +30,7 @@ TPCDS_PATH = Path(__file__).parent / ".." / ".." / ".." / "examples" / "tpcds_se
 @pytest.mark.parametrize("suffix", [".yaml", ".json"])
 def test_import_writes_a_loadable_document(tmp_path, suffix):
     schema_yml = tmp_path / "schema.yml"
-    assert main(["export", str(TPCDS_PATH), str(schema_yml)]) == 0
+    assert main(["export", str(TPCDS_PATH), str(schema_yml), "--format", "dbt-meta"]) == 0
 
     document_path = tmp_path / f"semantic_model{suffix}"
     assert main(["import", str(schema_yml), str(document_path), "--schema", "public"]) == 0
@@ -43,3 +43,26 @@ def test_import_writes_a_loadable_document(tmp_path, suffix):
     assert {dataset.name for dataset in document.semantic_model[0].datasets} == {
         "store_sales", "date_dim", "customer", "item", "store"
     }
+
+def test_export_writes_a_lightdash_project(tmp_path):
+    project = tmp_path / "project"
+    assert main(["export", str(TPCDS_PATH), str(project), "--dialect", "BIGQUERY"]) == 0
+    files = sorted(p.name for p in (project / "lightdash" / "models").iterdir())
+    assert files == ["customer.yml", "date_dim.yml", "item.yml", "store.yml", "store_sales.yml"]
+    model = yaml.safe_load((project / "lightdash" / "models" / "store_sales.yml").read_text())
+    assert model["type"] == "model"
+    assert model["sql_from"] == "tpcds.public.store_sales"
+    assert all({"name", "type", "sql"} <= set(d) for d in model["dimensions"])
+    config = yaml.safe_load((project / "lightdash.config.yml").read_text())
+    assert config["warehouse"] == {"type": "bigquery"}
+    assert config["name"] == "tpcds_retail_model"
+    # A second export leaves an existing config alone.
+    (project / "lightdash.config.yml").write_text("name: mine\nversion: '1.0'\nwarehouse:\n  type: postgres\n")
+    assert main(["export", str(TPCDS_PATH), str(project)]) == 0
+    assert yaml.safe_load((project / "lightdash.config.yml").read_text())["name"] == "mine"
+
+
+def test_export_dbt_meta_still_writes_one_schema_file(tmp_path):
+    schema_yml = tmp_path / "schema.yml"
+    assert main(["export", str(TPCDS_PATH), str(schema_yml), "--format", "dbt-meta"]) == 0
+    assert yaml.safe_load(schema_yml.read_text())["version"] == 2

@@ -74,6 +74,12 @@ class ConverterIssueType(Enum):
     # Import: a model's `sql_filter` / `sql_where` / `required_filters` are kept
     # for Lightdash only; the Ossie dataset is unrestricted for other consumers.
     ROW_FILTER_NOT_PORTABLE = "ROW_FILTER_NOT_PORTABLE"
+    # Export (Lightdash YAML): a dimension needs a type and the field has no
+    # datatype, so `string` is assumed.
+    DIMENSION_TYPE_DEFAULTED = "DIMENSION_TYPE_DEFAULTED"
+    # Export (Lightdash YAML): stashed column meta other than
+    # `additional_dimensions` has no place on a YAML dimension.
+    COLUMN_META_NOT_REPRESENTABLE = "COLUMN_META_NOT_REPRESENTABLE"
     # Import: a join targets a model that is not in the input, so the
     # relationship would reference an unknown dataset and is skipped.
     JOIN_TARGET_UNKNOWN = "JOIN_TARGET_UNKNOWN"

@@ -16,9 +16,11 @@
 # under the License.
 """Convert an Ossie document into Lightdash semantic definitions.
 
-The output is a dbt ``schema.yml``-shaped dictionary whose ``meta`` blocks
-carry Lightdash dimensions, metrics and joins, ready to be merged into a dbt
-project that Lightdash reads. Lightdash-specific presentation attributes that
+``convert`` produces a dbt ``schema.yml``-shaped dictionary whose ``meta``
+blocks carry Lightdash dimensions, metrics and joins, ready to be merged into
+a dbt project that Lightdash reads. ``convert_models`` produces Lightdash's
+own dbt-free model files (``type: model``, ``sql_from``, typed dimensions),
+which ``lightdash deploy`` reads directly. Lightdash-specific presentation attributes that
 have no Ossie vocabulary round-trip through ``custom_extensions`` entries with
 ``vendor_name: LIGHTDASH``; their keys are overlaid onto the generated
 definitions and win for presentation attributes, while structural keys
@@ -67,6 +69,10 @@ _PROTECTED_AGGREGATION_KEYS = _PROTECTED_METRIC_KEYS | {"type", "percentile"}
 _PROTECTED_JOIN_KEYS = {"join", "sql_on", "alias"}
 # Dataset-level stash keys that map to Ossie vocabulary or are handled apart.
 _PROTECTED_MODEL_KEYS = {"joins", "metrics", "primary_key", "ai_hint"}
+# Order of the top-level keys in a Lightdash model file; anything else
+# (stashed model meta) follows in source order.
+_MODEL_KEY_ORDER = ("type", "name", "label", "description", "sql_from", "primary_key", "ai_hint")
+_DIMENSION_KEY_ORDER = ("name", "type", "label", "description", "sql", "hidden")
 
 # Joins a dataset declares, keyed by the joined dataset: the name Lightdash SQL
 # uses to reference it (the joined model, or its alias). The first join to a
@@ -120,6 +126,64 @@ def _ai_hint(ai_context: Any) -> Any:
     return hints[0] if len(hints) == 1 else hints
 
 
+def _ordered(entries: Dict[str, Any], order: Tuple[str, ...]) -> Dict[str, Any]:
+    """Return ``entries`` with the keys in ``order`` first, the rest as they came."""
+    return {
+        **{key: entries[key] for key in order if key in entries},
+        **{key: value for key, value in entries.items() if key not in order},
+    }
+
+
+def _to_lightdash_model(
+    dataset: OssieDataset, model: Dict[str, Any], issues: List[ConverterIssue]
+) -> Dict[str, Any]:
+    """Reshape a dbt-flavoured model into a Lightdash model file."""
+    meta = dict(model.get("meta") or {})
+    out: Dict[str, Any] = {"type": "model", "name": model["name"]}
+    if model.get("description"):
+        out["description"] = model["description"]
+    out["sql_from"] = dataset.source
+    joins = meta.pop("joins", None)
+    model_metrics = meta.pop("metrics", None)
+    out.update(meta)
+    if joins:
+        out["joins"] = joins
+    if model_metrics:
+        out["metrics"] = model_metrics
+
+    dimensions: List[Dict[str, Any]] = []
+    for column in model.get("columns") or []:
+        column_meta = column.get("meta") or {}
+        dimension = dict(column_meta.get("dimension") or {})
+        dimension["name"] = column["name"]
+        if column.get("description") and "description" not in dimension:
+            dimension["description"] = column["description"]
+        if not dimension.get("type"):
+            issues.append(
+                ConverterIssue(
+                    issue_type=ConverterIssueType.DIMENSION_TYPE_DEFAULTED,
+                    element_name=f"{model['name']}.{column['name']}",
+                )
+            )
+            dimension["type"] = "string"
+        if not dimension.get("sql"):
+            dimension["sql"] = f"${{TABLE}}.{column['name']}"
+        if column_meta.get("metrics"):
+            dimension["metrics"] = column_meta["metrics"]
+        if column_meta.get("additional_dimensions"):
+            dimension["additional_dimensions"] = column_meta["additional_dimensions"]
+        if any(key not in ("dimension", "metrics", "additional_dimensions") for key in column_meta):
+            issues.append(
+                ConverterIssue(
+                    issue_type=ConverterIssueType.COLUMN_META_NOT_REPRESENTABLE,
+                    element_name=f"{model['name']}.{column['name']}",
+                )
+            )
+        dimensions.append(_ordered(dimension, _DIMENSION_KEY_ORDER))
+    out["dimensions"] = dimensions
+    return _ordered(out, _MODEL_KEY_ORDER)
+
+
 def _nest_meta_under_config(node: Dict[str, Any]) -> None:
     """Move a node's ``meta`` under ``config`` (the dbt 1.10+ placement)."""
     meta = node.pop("meta", None)
@@ -150,16 +214,32 @@ class OssieToLightdashConverter:
         self._meta_under_config = meta_under_config
 
     def convert(self, document: OssieDocument) -> ConverterResult[Dict[str, Any]]:
+        """Ossie document → dbt ``schema.yml`` dict with Lightdash ``meta``."""
         issues: List[ConverterIssue] = []
         models: List[Dict[str, Any]] = []
         for semantic_model in document.semantic_model:
-            models.extend(self._convert_semantic_model(semantic_model, issues))
+            models.extend(model for _, model in self._convert_semantic_model(semantic_model, issues))
         if self._meta_under_config:
             for model in models:
                 _nest_meta_under_config(model)
                 for column in model.get("columns") or []:
                     _nest_meta_under_config(column)
         return ConverterResult(output={"version": 2, "models": models}, issues=issues)
+
+    def convert_models(self, document: OssieDocument) -> ConverterResult[List[Dict[str, Any]]]:
+        """Ossie document → Lightdash model files (one dict per dataset).
+
+        The dbt-free format has a home for everything the dbt flavour has to
+        stash: ``sql_from`` is the dataset's ``source`` verbatim, model meta
+        becomes top-level keys, and every dimension carries its own ``type``
+        and ``sql``.
+        """
+        issues: List[ConverterIssue] = []
+        models: List[Dict[str, Any]] = []
+        for semantic_model in document.semantic_model:
+            for dataset, model in self._convert_semantic_model(semantic_model, issues):
+                models.append(_to_lightdash_model(dataset, model, issues))
+        return ConverterResult(output=models, issues=issues)
 
     def _pick_expression(
         self, expression: OssieExpression, element_name: str, issues: List[ConverterIssue]
@@ -183,7 +263,7 @@ class OssieToLightdashConverter:
 
     def _convert_semantic_model(
         self, semantic_model: OssieSemanticModel, issues: List[ConverterIssue]
-    ) -> List[Dict[str, Any]]:
+    ) -> List[Tuple[OssieDataset, Dict[str, Any]]]:
         datasets = semantic_model.datasets or []
         dataset_names = {dataset.name for dataset in datasets}
         model_name_by_dataset = {
@@ -253,7 +333,7 @@ class OssieToLightdashConverter:
         for dataset_name, joins in joins_by_dataset.items():
             models_by_dataset[dataset_name].setdefault("meta", {})["joins"] = joins
 
-        return [models_by_dataset[dataset.name] for dataset in datasets]
+        return [(dataset, models_by_dataset[dataset.name]) for dataset in datasets]
 
     def _plan_joins(
         self,

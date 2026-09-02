@@ -713,3 +713,47 @@ class TestOssieToLightdash:
         assert customer_id["meta"]["additional_dimensions"] == {
             "id_prefix": {"type": "string", "sql": "LEFT(${TABLE}.customer_id, 2)"}
         }
+
+    def test_lightdash_model_files_are_deployable_as_they_are(self):
+        document = _document()
+        tampered = document.model_copy(deep=True)
+        datasets = tampered.semantic_model[0].datasets
+        datasets[0] = datasets[0].model_copy(
+            update={
+                "primary_key": ["order_id"],
+                "custom_extensions": [
+                    OssieCustomExtension(
+                        vendor_name="LIGHTDASH",
+                        data=json.dumps({"sql_filter": "${TABLE}.deleted = false", "label": "Orders"}),
+                    )
+                ],
+            }
+        )
+        result = OssieToLightdashConverter().convert_models(tampered)
+        orders = next(m for m in result.output if m["name"] == "orders")
+        assert list(orders)[:4] == ["type", "name", "label", "description"]
+        assert orders["type"] == "model"
+        assert orders["sql_from"] == "analytics_db.marts.orders"
+        assert orders["primary_key"] == "order_id"
+        assert orders["sql_filter"] == "${TABLE}.deleted = false"
+        assert orders["joins"][0]["join"] == "customers"
+        assert orders["metrics"]["conversion_rate"]["type"] == "number"
+        dimensions = {d["name"]: d for d in orders["dimensions"]}
+        # Every dimension carries its own type and sql; a measure-only field
+        # is a hidden one; column metrics sit under their dimension.
+        assert dimensions["order_date"] == {
+            "name": "order_date",
+            "type": "date",
+            "label": "Order date",
+            "sql": "${TABLE}.order_date",
+        }
+        assert dimensions["amount"]["hidden"] is True
+        assert dimensions["amount"]["sql"] == "${TABLE}.amount"
+        assert dimensions["amount"]["metrics"]["total_amount"]["type"] == "sum"
+        # No datatype on `status`: the type is assumed and reported.
+        assert dimensions["status"]["type"] == "string"
+        assert [
+            issue.element_name
+            for issue in result.issues
+            if issue.issue_type is ConverterIssueType.DIMENSION_TYPE_DEFAULTED
+        ] == ["orders.status", "orders.amount", "orders.customer_id", "customers.customer_id"]

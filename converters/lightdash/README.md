@@ -25,10 +25,13 @@ Lightdash reads its semantic layer from dbt `schema.yml` files: dimensions and
 metrics are declared per column (and per model) under `meta`. This converter
 translates between that shape and Ossie.
 
-- **Export** (`ossie_to_lightdash`): Ossie document → a dbt `schema.yml`-shaped
-  dictionary with Lightdash `meta` blocks, ready to merge into a dbt project.
-- **Import** (`lightdash_to_ossie`): a Lightdash-flavoured `schema.yml` → an
-  Ossie document, for teams adopting Ossie as the source of truth for
+- **Export** (`ossie_to_lightdash`): Ossie document → a Lightdash project.
+  The default output is Lightdash's own dbt-free model files (`type: model`,
+  `sql_from`, typed dimensions), which `lightdash deploy` reads as they are;
+  `--format dbt-meta` produces one dbt `schema.yml` with Lightdash `meta`
+  blocks instead, for projects that keep their definitions in dbt.
+- **Import** (`lightdash_to_ossie`): a Lightdash-flavoured dbt `schema.yml` →
+  an Ossie document, for teams adopting Ossie as the source of truth for
   definitions they already maintain in Lightdash.
 
 Lightdash-only attributes travel in `custom_extensions` under the registered
@@ -38,9 +41,23 @@ project exactly while every other consumer works from the core vocabulary.
 ## Usage
 
 ```
-ossie-lightdash export semantic_model.yaml schema.yml --dialect BIGQUERY [--meta-under-config]
+# Ossie -> a deployable Lightdash project (no dbt needed)
+ossie-lightdash export semantic_model.yaml my-project --dialect BIGQUERY
+cd my-project && lightdash deploy
+
+# Ossie -> one dbt schema.yml with Lightdash meta, for a dbt project
+ossie-lightdash export semantic_model.yaml schema.yml --format dbt-meta --dialect BIGQUERY [--meta-under-config]
+
+# Lightdash dbt meta -> Ossie
 ossie-lightdash import schema.yml semantic_model.json --database analytics_db --schema marts --dialect BIGQUERY
 ```
+
+The default export writes `my-project/lightdash/models/<model>.yml`, one file
+per dataset, and a starter `my-project/lightdash.config.yml` whose
+`warehouse.type` is derived from `--dialect` (`BIGQUERY`, `SNOWFLAKE`,
+`DATABRICKS`) or given with `--warehouse`; an existing config is left alone.
+Each dataset's `source` becomes the model's `sql_from` verbatim, a table
+reference or a query.
 
 Issues (anything lost or approximated, see below) are printed to stderr as
 `[ISSUE_TYPE] element`.
@@ -57,13 +74,23 @@ result = LightdashToOssieConverter(OssieDialect.BIGQUERY).convert(
 result.output   # OssieDocument
 result.issues   # [ConverterIssue(issue_type, element_name), ...]
 
-exported = OssieToLightdashConverter(OssieDialect.BIGQUERY).convert(result.output)
-exported.output  # {"version": 2, "models": [...]}
+models = OssieToLightdashConverter(OssieDialect.BIGQUERY).convert_models(document)
+models.output    # [{"type": "model", "name": ..., "sql_from": ..., "dimensions": [...]}, ...]
+
+exported = OssieToLightdashConverter(OssieDialect.BIGQUERY).convert(document)
+exported.output  # {"version": 2, "models": [...]}  (dbt-meta flavour)
 ```
 
 Requires Python 3.11+ and the in-repo `apache-ossie` package (`../../python`).
 
 ## Mapping
+
+The table describes the dbt-meta flavour; the model-file flavour is the same
+mapping with three differences: `dataset.source` is the model's `sql_from`,
+every dimension carries its own `type` and `sql` (a field without a datatype
+gets `string` with a `DIMENSION_TYPE_DEFAULTED` issue), and model meta that
+the dbt flavour has to stash (`sql_filter`, `group_details`,
+`default_time_dimension`, ...) are ordinary top-level keys of the model file.
 
 | Ossie | Lightdash (dbt meta) |
 | ----- | -------------------- |
@@ -170,8 +197,9 @@ those types from the warehouse, not from the YAML.
 
 ### Kept for Lightdash only
 
-Stashed in the `LIGHTDASH` extension and restored on export, invisible to
-other consumers: presentation attributes of dimensions and metrics (`format`,
+Stashed in the `LIGHTDASH` extension and restored on export (as `meta` in the
+dbt flavour, as top-level keys in the model-file flavour), invisible to other
+consumers: presentation attributes of dimensions and metrics (`format`,
 `round`, `compact`, `groups`, `urls`, `show_underlying_values`, ...); model
 meta without Ossie vocabulary (`label`, `hidden`, `group_details`,
 `default_time_dimension`, `order_fields_by`, ...); column meta outside
@@ -210,8 +238,8 @@ dataset is unrestricted). Encoding metric filters as `CASE WHEN` and
   from the document.
 - Custom extensions of other vendors (`FOREIGN_EXTENSION_IGNORED`); they
   remain untouched in the Ossie document.
-- Standalone Lightdash YAML projects (Lightdash without dbt) — the converter
-  targets the dbt-meta flavour.
+- Import reads the dbt-meta flavour only; Lightdash model files are not yet
+  read back.
 - Documents are emitted at the in-repo spec version; dbt-core 1.12's native
   Ossie parsing accepts `0.1.0` / `0.1.1` only.
 
@@ -223,7 +251,8 @@ Every loss or approximation is reported as a `ConverterIssue`: on import
 `EXPRESSION_NOT_PORTABLE`, `METRIC_REFERENCE_INLINED`,
 `ALIAS_REFERENCE_FLATTENED`, `METRIC_NAME_COLLISION`, `SOURCE_UNQUALIFIED`,
 `METRIC_SQL_MISSING`; on export `CROSS_DATASET_METRIC_DROPPED`,
-`FIELD_REFERENCE_UNJOINED`, `TIME_ROLE_NOT_REPRESENTABLE`, `DIALECT_UNAVAILABLE`,
+`FIELD_REFERENCE_UNJOINED`, `TIME_ROLE_NOT_REPRESENTABLE`,
+`DIMENSION_TYPE_DEFAULTED`, `COLUMN_META_NOT_REPRESENTABLE`, `DIALECT_UNAVAILABLE`,
 `RELATIONSHIP_COLUMNS_MISMATCHED`, `EXTENSION_DATA_INVALID`,
 `FOREIGN_EXTENSION_IGNORED`.
 
@@ -234,8 +263,9 @@ uv sync
 uv run pytest
 ```
 
-Beyond the unit tests and the TPC-DS round trip, the converter is exercised
-against real Lightdash projects (the public jaffle-shop demo and two
+The exported TPC-DS project compiles with `lightdash compile` (5 explores, 0
+errors). Beyond the unit tests and the TPC-DS round trip, the converter is
+exercised against real Lightdash projects (the public jaffle-shop demo and two
 production projects on BigQuery): every model's meta and every join survive
 Lightdash → Ossie → Lightdash, every uniquely named metric returns with its
 expression unchanged, and the documents pass `validation/validate.py`.

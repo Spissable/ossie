@@ -37,6 +37,49 @@ def _read_document(path: Path) -> OssieDocument:
     return OssieDocument.model_validate(yaml.safe_load(text))
 
 
+# Ossie dialects that name a Lightdash warehouse type.
+_WAREHOUSE_BY_DIALECT = {
+    OssieDialect.BIGQUERY: "bigquery",
+    OssieDialect.SNOWFLAKE: "snowflake",
+    OssieDialect.DATABRICKS: "databricks",
+}
+
+
+def _write_lightdash_project(
+    models, output: Path, *, name: str, warehouse: Optional[str]
+) -> None:
+    """Write one model file per dataset plus a starter lightdash.config.yml.
+
+    Files go to ``<output>/lightdash/models/<model>.yml``, the layout
+    ``lightdash deploy`` looks for; an existing config is left alone.
+    """
+    models_dir = output / "lightdash" / "models"
+    models_dir.mkdir(parents=True, exist_ok=True)
+    for model in models:
+        (models_dir / f"{model['name']}.yml").write_text(
+            yaml.safe_dump(model, sort_keys=False, allow_unicode=True), encoding="utf-8"
+        )
+    config = output / "lightdash.config.yml"
+    if not config.exists():
+        config.write_text(
+            yaml.safe_dump(
+                {
+                    "name": name,
+                    "version": "1.0",
+                    "warehouse": {"type": warehouse or "CHANGE_ME"},
+                },
+                sort_keys=False,
+            ),
+            encoding="utf-8",
+        )
+        if warehouse is None:
+            print(
+                "lightdash.config.yml: set warehouse.type (pass --warehouse, or a "
+                "--dialect Lightdash knows: BIGQUERY, SNOWFLAKE, DATABRICKS)",
+                file=sys.stderr,
+            )
+
+
 def _print_issues(issues) -> None:
     for issue in issues:
         print(f"[{issue.issue_type.value}] {issue.element_name}", file=sys.stderr)
@@ -47,10 +90,28 @@ def main(argv: Optional[List[str]] = None) -> int:
     subparsers = parser.add_subparsers(dest="command", required=True)
 
     export_parser = subparsers.add_parser(
-        "export", help="Ossie document (.json/.yaml) -> Lightdash dbt schema.yml"
+        "export",
+        help="Ossie document (.json/.yaml) -> Lightdash model files, or a dbt schema.yml",
     )
     export_parser.add_argument("input", type=Path)
-    export_parser.add_argument("output", type=Path)
+    export_parser.add_argument(
+        "output",
+        type=Path,
+        help="project directory (lightdash-yml) or schema file (dbt-meta)",
+    )
+    export_parser.add_argument(
+        "--format",
+        choices=["lightdash-yml", "dbt-meta"],
+        default="lightdash-yml",
+        help="lightdash-yml: Lightdash's dbt-free model files, deployable as they are "
+        "(default); dbt-meta: one dbt schema.yml with Lightdash meta blocks",
+    )
+    export_parser.add_argument(
+        "--warehouse",
+        default=None,
+        help="warehouse.type for the generated lightdash.config.yml "
+        "(default: derived from --dialect when possible)",
+    )
     export_parser.add_argument(
         "--dialect",
         choices=[dialect.name for dialect in OssieDialect],
@@ -83,13 +144,23 @@ def main(argv: Optional[List[str]] = None) -> int:
     args = parser.parse_args(argv)
 
     if args.command == "export":
-        result = OssieToLightdashConverter(
-            OssieDialect[args.dialect], meta_under_config=args.meta_under_config
-        ).convert(_read_document(args.input))
-        args.output.write_text(
-            yaml.safe_dump(result.output, sort_keys=False, allow_unicode=True),
-            encoding="utf-8",
-        )
+        dialect = OssieDialect[args.dialect]
+        document = _read_document(args.input)
+        converter = OssieToLightdashConverter(dialect, meta_under_config=args.meta_under_config)
+        if args.format == "lightdash-yml":
+            result = converter.convert_models(document)
+            _write_lightdash_project(
+                result.output,
+                args.output,
+                name=document.semantic_model[0].name if document.semantic_model else "ossie",
+                warehouse=args.warehouse or _WAREHOUSE_BY_DIALECT.get(dialect),
+            )
+        else:
+            result = converter.convert(document)
+            args.output.write_text(
+                yaml.safe_dump(result.output, sort_keys=False, allow_unicode=True),
+                encoding="utf-8",
+            )
     else:
         schema_yml = yaml.safe_load(args.input.read_text(encoding="utf-8"))
         result = LightdashToOssieConverter(OssieDialect[args.dialect]).convert(
