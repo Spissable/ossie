@@ -85,6 +85,31 @@ class ConverterIssueType(Enum):
     JOIN_TARGET_UNKNOWN = "JOIN_TARGET_UNKNOWN"
 
 
+# One line per issue type, for people reading the CLI output.
+ISSUE_EXPLANATIONS = {
+    ConverterIssueType.SOURCE_UNQUALIFIED: "no --schema given, so the dataset source is just the model name",
+    ConverterIssueType.JOIN_SQL_UNPARSED: "no column pair in sql_on; kept for Lightdash only, no relationship",
+    ConverterIssueType.JOIN_STASHED: "chained join, expression join or extra conditions; kept verbatim for Lightdash, relationships derived from the column pairs",
+    ConverterIssueType.CROSS_DATASET_METRIC_DROPPED: "no single model joins every dataset the expression references",
+    ConverterIssueType.RELATIONSHIP_COLUMNS_MISMATCHED: "from_columns and to_columns differ in length; skipped",
+    ConverterIssueType.EXTENSION_DATA_INVALID: "LIGHTDASH extension data is not valid JSON; its attributes are lost",
+    ConverterIssueType.METRIC_SQL_MISSING: "model-level metric without sql; skipped",
+    ConverterIssueType.TIME_ROLE_NOT_REPRESENTABLE: "is_time on a non-date type (e.g. an integer year); Lightdash has no such marker, the column is a plain dimension",
+    ConverterIssueType.FOREIGN_EXTENSION_IGNORED: "another vendor's extension; left untouched in the Ossie document",
+    ConverterIssueType.EXPRESSION_NOT_PORTABLE: "SQL uses parameters, user attributes or Liquid, which only Lightdash can evaluate; skipped",
+    ConverterIssueType.METRIC_REFERENCE_INLINED: "${metric} reference replaced by that metric's expression",
+    ConverterIssueType.ALIAS_REFERENCE_FLATTENED: "${alias.column} now points at the joined model; which join was meant is lost",
+    ConverterIssueType.DIALECT_UNAVAILABLE: "neither --dialect nor ANSI_SQL offered; first available dialect used",
+    ConverterIssueType.FIELD_REFERENCE_UNJOINED: "expression names a dataset this model does not join; emitted as is",
+    ConverterIssueType.METRIC_NAME_COLLISION: "still a duplicate after <model>_<metric>; suffixed",
+    ConverterIssueType.METRIC_FILTER_NOT_PORTABLE: "filters kept for Lightdash only; other tools see the unfiltered aggregate",
+    ConverterIssueType.ROW_FILTER_NOT_PORTABLE: "sql_filter / required_filters kept for Lightdash only; other tools see all rows",
+    ConverterIssueType.DIMENSION_TYPE_DEFAULTED: "no datatype on the field; dimension type set to string",
+    ConverterIssueType.COLUMN_META_NOT_REPRESENTABLE: "stashed column meta other than additional_dimensions has no place on a model-file dimension; dropped",
+    ConverterIssueType.JOIN_TARGET_UNKNOWN: "join to a model that is not in the input; skipped",
+}
+
+
 @dataclass(frozen=True)
 class ConverterIssue:
     """Records a single instance of information loss during conversion."""

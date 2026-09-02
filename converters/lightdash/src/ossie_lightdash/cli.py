@@ -26,6 +26,7 @@ from typing import List, Optional
 import yaml
 
 from ossie import OssieDialect, OssieDocument
+from ossie_lightdash.converter_issues import ISSUE_EXPLANATIONS
 from ossie_lightdash.dbt_project import load_schema
 from ossie_lightdash.lightdash_to_ossie import LightdashToOssieConverter
 from ossie_lightdash.ossie_to_lightdash import OssieToLightdashConverter
@@ -82,8 +83,16 @@ def _write_lightdash_project(
 
 
 def _print_issues(issues) -> None:
+    """One line per issue, with the explanation on its first occurrence."""
+    explained = set()
     for issue in issues:
-        print(f"[{issue.issue_type.value}] {issue.element_name}", file=sys.stderr)
+        line = f"[{issue.issue_type.value}] {issue.element_name}"
+        if issue.issue_type not in explained:
+            explained.add(issue.issue_type)
+            line += f"  -- {ISSUE_EXPLANATIONS.get(issue.issue_type, '')}".rstrip(" -")
+        print(line, file=sys.stderr)
+    if issues:
+        print(f"{len(issues)} issue(s); everything else converted cleanly.", file=sys.stderr)
 
 
 def main(argv: Optional[List[str]] = None) -> int:
@@ -159,12 +168,17 @@ def main(argv: Optional[List[str]] = None) -> int:
                 name=document.semantic_model[0].name if document.semantic_model else "ossie",
                 warehouse=args.warehouse or _WAREHOUSE_BY_DIALECT.get(dialect),
             )
+            summary = (
+                f"Wrote {len(result.output)} model file(s) to {args.output / 'lightdash' / 'models'}"
+                f" and {args.output / 'lightdash.config.yml'}; run `lightdash compile` there."
+            )
         else:
             result = converter.convert(document)
             args.output.write_text(
                 yaml.safe_dump(result.output, sort_keys=False, allow_unicode=True),
                 encoding="utf-8",
             )
+            summary = f"Wrote {len(result.output['models'])} model(s) to {args.output}."
     else:
         schema_yml = load_schema(args.input)
         result = LightdashToOssieConverter(OssieDialect[args.dialect]).convert(
@@ -172,6 +186,12 @@ def main(argv: Optional[List[str]] = None) -> int:
             database=args.database,
             schema=args.schema,
             semantic_model_name=args.semantic_model_name,
+        )
+        semantic_model = result.output.semantic_model[0]
+        summary = (
+            f"Wrote {len(semantic_model.datasets or [])} dataset(s), "
+            f"{len(semantic_model.metrics or [])} metric(s), "
+            f"{len(semantic_model.relationships or [])} relationship(s) to {args.output}."
         )
         document = result.output.model_dump(mode="json", by_alias=True, exclude_none=True)
         if args.output.suffix == ".json":
@@ -184,7 +204,9 @@ def main(argv: Optional[List[str]] = None) -> int:
                 encoding="utf-8",
             )
 
+    # Issues first, then what was written, all on stderr like the other converters.
     _print_issues(result.issues)
+    print(summary, file=sys.stderr)
     return 0
 
 

@@ -44,9 +44,19 @@ def test_import_writes_a_loadable_document(tmp_path, suffix):
         "store_sales", "date_dim", "customer", "item", "store"
     }
 
-def test_export_writes_a_lightdash_project(tmp_path):
+def test_export_writes_a_lightdash_project(tmp_path, capsys):
     project = tmp_path / "project"
     assert main(["export", str(TPCDS_PATH), str(project), "--dialect", "BIGQUERY"]) == 0
+    captured = capsys.readouterr()
+    # Like the other converters: stdout stays clean, stderr carries the report.
+    assert captured.out == ""
+    assert captured.err.splitlines()[-1].startswith("Wrote 5 model file(s) to ")
+    # The one loss is named, explained once, and counted.
+    assert captured.err.splitlines()[:2] == [
+        "[TIME_ROLE_NOT_REPRESENTABLE] d_year  -- is_time on a non-date type (e.g. an integer year); "
+        "Lightdash has no such marker, the column is a plain dimension",
+        "1 issue(s); everything else converted cleanly.",
+    ]
     files = sorted(p.name for p in (project / "lightdash" / "models").iterdir())
     assert files == ["customer.yml", "date_dim.yml", "item.yml", "store.yml", "store_sales.yml"]
     model = yaml.safe_load((project / "lightdash" / "models" / "store_sales.yml").read_text())
