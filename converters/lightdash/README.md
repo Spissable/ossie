@@ -28,13 +28,40 @@ translates between that shape and Ossie.
 - **Export** (`ossie_to_lightdash`): Ossie document → a dbt `schema.yml`-shaped
   dictionary with Lightdash `meta` blocks, ready to merge into a dbt project.
 - **Import** (`lightdash_to_ossie`): a Lightdash-flavoured `schema.yml` → an
-  Ossie document, as a migration path for teams with an existing installed
-  base of Lightdash metrics.
+  Ossie document, for teams adopting Ossie as the source of truth for
+  definitions they already maintain in Lightdash.
+
+Lightdash-only attributes travel in `custom_extensions` under the registered
+vendor token `LIGHTDASH`, so Lightdash → Ossie → Lightdash restores the
+project exactly while every other consumer works from the core vocabulary.
+
+## Usage
 
 ```
-ossie-lightdash export semantic_model.yaml schema.yml --dialect BIGQUERY
+ossie-lightdash export semantic_model.yaml schema.yml --dialect BIGQUERY [--meta-under-config]
 ossie-lightdash import schema.yml semantic_model.json --database analytics_db --schema marts --dialect BIGQUERY
 ```
+
+Issues (anything lost or approximated, see below) are printed to stderr as
+`[ISSUE_TYPE] element`.
+
+### Python API
+
+```python
+from ossie import OssieDialect
+from ossie_lightdash import LightdashToOssieConverter, OssieToLightdashConverter
+
+result = LightdashToOssieConverter(OssieDialect.BIGQUERY).convert(
+    schema_yml, database="analytics_db", schema="marts"
+)
+result.output   # OssieDocument
+result.issues   # [ConverterIssue(issue_type, element_name), ...]
+
+exported = OssieToLightdashConverter(OssieDialect.BIGQUERY).convert(result.output)
+exported.output  # {"version": 2, "models": [...]}
+```
+
+Requires Python 3.11+ and the in-repo `apache-ossie` package (`../../python`).
 
 ## Mapping
 
@@ -94,6 +121,100 @@ keeps one document valid across environments (see
 [dbt-core#15649](https://github.com/dbt-labs/dbt-core/issues/15649)).
 Omitting `--schema` as well is reported as a `SOURCE_UNQUALIFIED` issue.
 
+## Fidelity and unavoidable losses
+
+The two models disagree in five places. Each disagreement is handled the same
+way: carry what has vocabulary on both sides, keep the rest on the Lightdash
+side of the document, and report whatever another consumer of the document
+will not see.
+
+**Scope of metric names.** Lightdash scopes metric names per model, Ossie per
+semantic model, and every real Lightdash project has a `count` on several
+models. The Ossie name is therefore Lightdash's own field id,
+`<model>_<metric>`, always rather than only on collision: a metric's name must
+not change because a metric was added to a different model, and the field id
+is what Lightdash users already see in its API and URLs. The bare name is
+stashed and restored, so Lightdash → Ossie → Lightdash is exact; an Ossie
+document not written by Lightdash sees its metric names normalised once
+(`total_sales` on `store_sales` becomes `store_sales_total_sales`).
+
+**What a dimension is.** Every dbt column is a Lightdash dimension unless it
+is hidden; an Ossie field is a dimension only when it says so. `hidden: true`
+and "no `dimension`" are the two ends of one mapping. The cost is that a
+hidden column cannot carry Ossie's `is_time` role, and Lightdash has no way to
+say "a dimension that is not for grouping but is not a measure either"; neither
+side has such a thing today.
+
+**Joins versus relationships.** Ossie's relationships form one graph. A
+Lightdash explore is a base model plus an explicit list of joins, which may
+reach a table through another one, join on an expression, or add conditions.
+The graph part becomes relationships (a chained join derives the edge between
+the two models it names); the explore part is stashed verbatim on the dataset
+and restored, so the explore comes back exactly while other consumers see the
+graph. Because Lightdash never resolves `${other.column}` transitively, a
+metric spanning datasets is hosted on the model that joins every referenced
+dataset directly, and dropped with an issue when no such model exists.
+
+**Query-time evaluation.** Lightdash evaluates project parameters, user
+attributes and Liquid templating when a query runs. No downstream consumer
+can, so a dimension or metric whose SQL depends on them is skipped on import
+and reported rather than shipped as SQL that is not SQL. Metric-to-metric
+references are inlined for the same reason: Ossie metrics cannot reference
+each other.
+
+**Types.** Lightdash's `number` covers Ossie's `Integer`, `Decimal` and
+`Float`, and its `timestamp` covers `DateTime` and `DateTimeTz`, so datatypes
+round-trip by category rather than by exact member. A column with no authored
+`type` leaves without a datatype, which the spec allows; Lightdash learns
+those types from the warehouse, not from the YAML.
+
+### Kept for Lightdash only
+
+Stashed in the `LIGHTDASH` extension and restored on export, invisible to
+other consumers: presentation attributes of dimensions and metrics (`format`,
+`round`, `compact`, `groups`, `urls`, `show_underlying_values`, ...); model
+meta without Ossie vocabulary (`label`, `hidden`, `group_details`,
+`default_time_dimension`, `order_fields_by`, ...); column meta outside
+`dimension` / `metrics` (`additional_dimensions`); join attributes (`alias`,
+`type`, `fields`, ...); and joins Ossie cannot reproduce.
+
+Two of these change query results rather than presentation and are therefore
+reported: a metric's `filters` (`METRIC_FILTER_NOT_PORTABLE` — the Ossie
+expression is the unfiltered aggregate) and a model's `sql_filter` /
+`sql_where` / `required_filters` (`ROW_FILTER_NOT_PORTABLE` — the Ossie
+dataset is unrestricted). Encoding metric filters as `CASE WHEN` and
+`sql_filter` as a query `source` is the planned fix.
+
+### Approximated
+
+- A dataset joined more than once is referenced through its first join when
+  an expression names it (`date_dim.year` → `${date_dim.year}`, not the
+  aliased second join); a `${alias.column}` reference is flattened onto the
+  joined dataset with an `ALIAS_REFERENCE_FLATTENED` issue.
+- A name that still collides after qualification (model `orders` + metric
+  `x_total` versus model `orders_x` + metric `total`) is suffixed with a
+  `METRIC_NAME_COLLISION` issue.
+- `ai_context` synonyms and examples of the structured form are rendered as
+  extra `ai_hint` lines on export; on import `ai_hint` becomes a plain
+  instruction string.
+- A single-column `primary_key` exports as a string, a composite one as a list.
+
+### Not carried
+
+- `unique_keys` — Lightdash has no corresponding concept.
+- `ai_context` and custom extensions on relationships.
+- `dataset.name` when it differs from the source table name: the dbt model is
+  named after the table part of `source`.
+- Relationships with mismatched `from_columns` / `to_columns` lengths
+  (`RELATIONSHIP_COLUMNS_MISMATCHED`), and relationships to datasets missing
+  from the document.
+- Custom extensions of other vendors (`FOREIGN_EXTENSION_IGNORED`); they
+  remain untouched in the Ossie document.
+- Standalone Lightdash YAML projects (Lightdash without dbt) — the converter
+  targets the dbt-meta flavour.
+- Documents are emitted at the in-repo spec version; dbt-core 1.12's native
+  Ossie parsing accepts `0.1.0` / `0.1.1` only.
+
 ## Issues
 
 Every loss or approximation is reported as a `ConverterIssue`: on import
@@ -106,61 +227,15 @@ Every loss or approximation is reported as a `ConverterIssue`: on import
 `RELATIONSHIP_COLUMNS_MISMATCHED`, `EXTENSION_DATA_INVALID`,
 `FOREIGN_EXTENSION_IGNORED`.
 
-## Known limitations
+## Development
 
-- **A metric spanning datasets none of which joins all the others is
-  dropped on export** (`CROSS_DATASET_METRIC_DROPPED`): Lightdash resolves
-  `${other.column}` only through the joins the hosting model declares, never
-  transitively. A field expression referencing an unjoined dataset is emitted
-  as-is with a `FIELD_REFERENCE_UNJOINED` issue.
-- **A dataset joined more than once** is referenced through its first join
-  when an expression names it (`date_dim.year` → `${date_dim.year}` rather
-  than the aliased second join).
-- **Parameter and user-attribute references** (`${lightdash.parameters.x}`,
-  `${ld.user.email}`) and **Liquid templating** (`{% if ld.query.filters … %}`)
-  are evaluated by Lightdash at query time and have no Ossie form: a dimension
-  or metric whose SQL uses them is skipped on import with an
-  `EXPRESSION_NOT_PORTABLE` issue.
-- **Metric names are normalised on the first round trip**: an Ossie metric
-  named `total_sales` on `store_sales` comes back as `store_sales_total_sales`
-  after Lightdash → Ossie, and stays stable from then on. A name that still
-  collides after qualification (model `orders` + metric `x_total` vs model
-  `orders_x` + metric `total`) is suffixed with a `METRIC_NAME_COLLISION`
-  issue.
-- **Metric-to-metric references** (`${other_metric}`) are inlined on import
-  (`METRIC_REFERENCE_INLINED`), since Ossie metrics cannot reference each
-  other; the export direction does not reconstruct the reference.
-- **References through a join alias** (`${sold_date.year}`) are rewritten to
-  the joined dataset (`date_dim.year`) with an `ALIAS_REFERENCE_FLATTENED`
-  issue: Ossie has no aliases, so which of several joins to the same dataset
-  was meant is not preserved in the expression.
-- **`unique_keys` are not exported** — Lightdash has no corresponding
-  concept — and consequently cannot be reconstructed on import.
-- **`dataset.name` is not preserved when it differs from the source table
-  name**: the dbt model is named after the table part of `source`, and the
-  import direction derives dataset names from model names. References inside
-  expressions and relationships are rewritten consistently, but a
-  name-stable round-trip is not guaranteed.
-- **Relationships with mismatched `from_columns` / `to_columns` lengths are
-  skipped on export** with a `RELATIONSHIP_COLUMNS_MISMATCHED` issue.
-- **Datatypes round-trip by category, not by exact type**: Lightdash types are
-  coarser than Ossie datatypes, so `Integer` comes back as `Decimal` and
-  `DateTimeTz` as `DateTime`.
-- **A non-temporal time axis** (`is_time: true` on an `Integer` year) is
-  reported with a `TIME_ROLE_NOT_REPRESENTABLE` issue on export.
-- **Stashed meta is Lightdash-only.** Model meta without Ossie vocabulary and
-  joins Ossie cannot reproduce round-trip exactly through the dataset's
-  extension, but other consumers do not see them. Two of these change query
-  results rather than presentation and are therefore reported: a metric's
-  `filters` (`METRIC_FILTER_NOT_PORTABLE`: the Ossie expression is the
-  unfiltered aggregate) and a model's `sql_filter` / `required_filters`
-  (`ROW_FILTER_NOT_PORTABLE`: the Ossie dataset is unrestricted). Encoding
-  metric filters as `CASE WHEN` and `sql_filter` as a query `source` is the
-  planned fix.
-- **Standalone Lightdash YAML projects** (Lightdash without dbt) are not
-  supported yet; the converter targets the dbt-meta flavour.
-- Custom extensions from other vendors are ignored on export (reported as
-  `FOREIGN_EXTENSION_IGNORED`); they remain untouched in the Ossie document.
-- Documents are emitted at the current in-repo spec version. Note that
-  dbt-core 1.12's native OSI parsing accepts spec versions `0.1.0` / `0.1.1`
-  only.
+```
+uv sync
+uv run pytest
+```
+
+Beyond the unit tests and the TPC-DS round trip, the converter is exercised
+against real Lightdash projects (the public jaffle-shop demo and two
+production projects on BigQuery): every model's meta and every join survive
+Lightdash → Ossie → Lightdash, every uniquely named metric returns with its
+expression unchanged, and the documents pass `validation/validate.py`.
