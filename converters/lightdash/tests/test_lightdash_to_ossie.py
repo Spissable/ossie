@@ -436,6 +436,15 @@ class TestLightdashToOssie:
                                 }
                             },
                         },
+                        {
+                            "name": "status_label",
+                            "meta": {
+                                "dimension": {
+                                    "type": "string",
+                                    "sql": "{% if ld.query.filters contains 'orders.status' %} 'filtered' {% else %} ${TABLE}.status {% endif %}",
+                                }
+                            },
+                        },
                         {"name": "order_date", "meta": {"dimension": {"type": "date"}}},
                     ],
                 }
@@ -449,7 +458,7 @@ class TestLightdashToOssie:
             issue.element_name
             for issue in result.issues
             if issue.issue_type is ConverterIssueType.EXPRESSION_NOT_PORTABLE
-        ) == ["is_recent", "my_orders"]
+        ) == ["is_recent", "my_orders", "status_label"]
 
     def test_aliased_joins_become_relationships(self):
         schema_yml = {

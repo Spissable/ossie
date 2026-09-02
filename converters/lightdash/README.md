@@ -87,8 +87,10 @@ Omitting `--schema` as well is reported as a `SOURCE_UNQUALIFIED` issue.
   when an expression names it (`date_dim.year` → `${date_dim.year}` rather
   than the aliased second join).
 - **Parameter and user-attribute references** (`${lightdash.parameters.x}`,
-  `${ld.user.email}`) have no Ossie form: a dimension or metric whose SQL uses
-  them is skipped on import with an `EXPRESSION_NOT_PORTABLE` issue.
+  `${ld.user.email}`) and **Liquid templating** (`{% if ld.query.filters … %}`)
+  are evaluated by Lightdash at query time and have no Ossie form: a dimension
+  or metric whose SQL uses them is skipped on import with an
+  `EXPRESSION_NOT_PORTABLE` issue.
 - **Metric-to-metric references** (`${other_metric}`) are inlined on import
   (`METRIC_REFERENCE_INLINED`), since Ossie metrics cannot reference each
   other; the export direction does not reconstruct the reference.

@@ -30,6 +30,11 @@ from typing import Callable, Dict, List, Optional
 
 _REFERENCE_RE = re.compile(r"\$\{([^}]+)\}")
 _NON_PORTABLE_REFERENCE_RE = re.compile(r"\$\{(?:lightdash|ld)\.[^}]*\}")
+# Liquid tags and bare `ld.parameters.x` / `ld.query.filters` / `ld.user.x`
+# references inside them are evaluated by Lightdash at query time.
+_NON_PORTABLE_SYNTAX_RE = re.compile(
+    r"\{%|\{\{|(?<![\w.])(?:lightdash|ld)\.(?:parameters|query|user)\."
+)
 _COLUMN_REFERENCE_RE = re.compile(r"^[A-Za-z_]\w*(?:\.\w+)?$")
 
 # Lightdash metric types that are encoded as an aggregation in the Ossie
@@ -190,8 +195,12 @@ def ossie_sql_to_lightdash(
 
 
 def has_non_portable_reference(sql: str) -> bool:
-    """True when the SQL references project parameters or user attributes."""
-    return _NON_PORTABLE_REFERENCE_RE.search(sql) is not None
+    """True when the SQL depends on Lightdash query-time evaluation: project
+    parameters, user attributes, or Liquid templating."""
+    return (
+        _NON_PORTABLE_REFERENCE_RE.search(sql) is not None
+        or _NON_PORTABLE_SYNTAX_RE.search(sql) is not None
+    )
 
 
 @dataclass
