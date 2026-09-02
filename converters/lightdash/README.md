@@ -48,8 +48,8 @@ cd my-project && lightdash deploy
 # Ossie -> one dbt schema.yml with Lightdash meta, for a dbt project
 ossie-lightdash export semantic_model.yaml schema.yml --format dbt-meta --dialect BIGQUERY [--meta-under-config]
 
-# Lightdash dbt meta -> Ossie
-ossie-lightdash import schema.yml semantic_model.json --database analytics_db --schema marts --dialect BIGQUERY
+# Lightdash dbt meta -> Ossie (a schema file, or a whole dbt project directory)
+ossie-lightdash import path/to/dbt semantic_model.json --database analytics_db --schema marts --dialect BIGQUERY
 ```
 
 The default export writes `my-project/lightdash/models/<model>.yml`, one file
@@ -128,7 +128,10 @@ dialect with a `DIALECT_UNAVAILABLE` issue when an expression offers neither.
 ## Input shape
 
 `import` reads the `models:` and `seeds:` entries of a dbt schema file (seeds
-are tables to Lightdash too). A join whose target is not among them is skipped
+are tables to Lightdash too), or of every YAML file under a directory: point it
+at the dbt project root and it walks `models/`, `seeds/` and the rest in sorted
+order, ignoring `target/`, `dbt_packages/` and `dbt_project.yml`. A join whose
+target is not among them is skipped
 with a `JOIN_TARGET_UNKNOWN` issue, since Ossie relationships may only
 reference datasets in the document.
 

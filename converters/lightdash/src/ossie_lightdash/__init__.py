@@ -20,6 +20,7 @@ from ossie_lightdash.converter_issues import (
     ConverterIssueType,
     ConverterResult,
 )
+from ossie_lightdash.dbt_project import load_schema
 from ossie_lightdash.lightdash_to_ossie import LightdashToOssieConverter
 from ossie_lightdash.ossie_to_lightdash import OssieToLightdashConverter
 
@@ -29,4 +30,5 @@ __all__ = [
     "ConverterResult",
     "LightdashToOssieConverter",
     "OssieToLightdashConverter",
+    "load_schema",
 ]

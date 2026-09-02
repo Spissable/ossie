@@ -66,3 +66,23 @@ def test_export_dbt_meta_still_writes_one_schema_file(tmp_path):
     schema_yml = tmp_path / "schema.yml"
     assert main(["export", str(TPCDS_PATH), str(schema_yml), "--format", "dbt-meta"]) == 0
     assert yaml.safe_load(schema_yml.read_text())["version"] == 2
+
+def test_import_reads_a_whole_dbt_project(tmp_path):
+    project = tmp_path / "dbt"
+    (project / "models" / "marts").mkdir(parents=True)
+    (project / "target").mkdir()
+    (project / "dbt_project.yml").write_text("name: p\nmodels:\n  p:\n    +materialized: table\n")
+    (project / "models" / "orders.yml").write_text(
+        "models:\n  - name: orders\n    columns:\n      - name: amount\n        meta:\n          metrics:\n            total: {type: sum}\n"
+    )
+    (project / "models" / "marts" / "customers.yaml").write_text(
+        "models:\n  - name: customers\n    columns:\n      - name: id\n"
+    )
+    (project / "data.yml").write_text("seeds:\n  - name: statuses\n    columns:\n      - name: code\n")
+    (project / "target" / "stale.yml").write_text("models:\n  - name: stale\n")
+
+    document_path = tmp_path / "model.yaml"
+    assert main(["import", str(project), str(document_path), "--schema", "marts"]) == 0
+    document = OssieDocument.model_validate(yaml.safe_load(document_path.read_text()))
+    assert [d.name for d in document.semantic_model[0].datasets] == ["customers", "orders", "statuses"]
+    assert document.semantic_model[0].metrics[0].name == "orders_total"

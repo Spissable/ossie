@@ -26,6 +26,7 @@ from typing import List, Optional
 import yaml
 
 from ossie import OssieDialect, OssieDocument
+from ossie_lightdash.dbt_project import load_schema
 from ossie_lightdash.lightdash_to_ossie import LightdashToOssieConverter
 from ossie_lightdash.ossie_to_lightdash import OssieToLightdashConverter
 
@@ -125,9 +126,12 @@ def main(argv: Optional[List[str]] = None) -> int:
     )
 
     import_parser = subparsers.add_parser(
-        "import", help="Lightdash dbt schema.yml -> Ossie document (.json/.yaml)"
+        "import",
+        help="Lightdash dbt schema.yml, or a dbt project directory -> Ossie document (.json/.yaml)",
     )
-    import_parser.add_argument("input", type=Path)
+    import_parser.add_argument(
+        "input", type=Path, help="a schema file, or a directory walked for models: and seeds:"
+    )
     import_parser.add_argument("output", type=Path)
     import_parser.add_argument("--database", default=None)
     import_parser.add_argument("--schema", default=None)
@@ -162,7 +166,7 @@ def main(argv: Optional[List[str]] = None) -> int:
                 encoding="utf-8",
             )
     else:
-        schema_yml = yaml.safe_load(args.input.read_text(encoding="utf-8"))
+        schema_yml = load_schema(args.input)
         result = LightdashToOssieConverter(OssieDialect[args.dialect]).convert(
             schema_yml,
             database=args.database,
