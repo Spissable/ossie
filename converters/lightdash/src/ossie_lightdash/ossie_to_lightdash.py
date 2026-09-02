@@ -61,8 +61,8 @@ LIGHTDASH_VENDOR_NAME = "lightdash"
 # from overriding the Ossie-derived definition. ``type`` stays overridable on
 # metrics whose expression is not a recognised aggregation: it is the channel
 # for types an expression cannot express (``boolean``, ``string``, ...).
-_PROTECTED_DIMENSION_KEYS = {"sql", "label"}
-_PROTECTED_METRIC_KEYS = {"sql", "description"}
+_PROTECTED_DIMENSION_KEYS = {"sql", "label", "ai_hint"}
+_PROTECTED_METRIC_KEYS = {"sql", "description", "ai_hint"}
 _PROTECTED_AGGREGATION_KEYS = _PROTECTED_METRIC_KEYS | {"type", "percentile"}
 _PROTECTED_JOIN_KEYS = {"join", "sql_on", "alias"}
 
@@ -94,6 +94,26 @@ def _lightdash_extension_data(element: Any, issues: List[ConverterIssue]) -> Dic
                 )
             )
     return data
+
+
+def _ai_hint(ai_context: Any) -> Any:
+    """Ossie `ai_context` as a Lightdash `ai_hint`: one line stays a string, a
+    multi-line instruction becomes a list, and synonyms and examples of the
+    structured form are rendered as extra hints."""
+    if ai_context is None:
+        return None
+    if isinstance(ai_context, str):
+        hints = ai_context.split("\n")
+    else:
+        hints = (ai_context.instructions or "").split("\n")
+        if ai_context.synonyms:
+            hints.append("Also known as: " + ", ".join(ai_context.synonyms))
+        if ai_context.examples:
+            hints.append("Example questions: " + "; ".join(ai_context.examples))
+    hints = [hint for hint in hints if hint]
+    if not hints:
+        return None
+    return hints[0] if len(hints) == 1 else hints
 
 
 def _model_name_for(dataset: OssieDataset) -> str:
@@ -216,10 +236,13 @@ class OssieToLightdashConverter:
                     relationship.from_columns, relationship.to_columns
                 )
             )
+            # An Ossie relationship always runs from the many side to the one
+            # side; a stashed Lightdash `relationship` overrides it below.
             join: Dict[str, Any] = {"join": to_model_name}
             if alias:
                 join["alias"] = alias
             join["sql_on"] = sql_on
+            join["relationship"] = "many-to-one"
             join.update(
                 {
                     key: value
@@ -247,8 +270,21 @@ class OssieToLightdashConverter:
                 column["description"] = field.description
 
             dimension: Dict[str, Any] = {}
-            if field.label:
-                dimension["label"] = field.label
+            ai_hint = _ai_hint(field.ai_context)
+            if field.dimension is None and (field.label or ai_hint is not None):
+                # Lightdash keeps labels and AI hints on dimensions only;
+                # writing them would turn a measure-only field into one.
+                issues.append(
+                    ConverterIssue(
+                        issue_type=ConverterIssueType.FIELD_ATTRIBUTE_NOT_REPRESENTABLE,
+                        element_name=field.name,
+                    )
+                )
+            elif field.dimension is not None:
+                if field.label:
+                    dimension["label"] = field.label
+                if ai_hint is not None:
+                    dimension["ai_hint"] = ai_hint
             if field.dimension is not None:
                 # Only dimension fields carry a Lightdash type: emitting one for
                 # a measure-only field would turn it into a dimension on import.
@@ -273,6 +309,14 @@ class OssieToLightdashConverter:
                         element_name=field.name,
                     )
                 )
+            if (
+                field.dimension is not None
+                and field.dimension.is_time is False
+                and is_temporal(field.datatype)
+            ):
+                # Explicitly withdrawn from the time axis: Lightdash's role
+                # marker for that is `time_intervals: OFF`.
+                dimension["time_intervals"] = "OFF"
             expression = self._pick_expression(field.expression, field.name, issues)
             if expression and expression != field.name:
                 unjoined = referenced_datasets(expression, dataset_names) - {
@@ -306,6 +350,15 @@ class OssieToLightdashConverter:
         model: Dict[str, Any] = {"name": _model_name_for(dataset)}
         if dataset.description:
             model["description"] = dataset.description
+        meta: Dict[str, Any] = {}
+        if dataset.primary_key:
+            keys = list(dataset.primary_key)
+            meta["primary_key"] = keys[0] if len(keys) == 1 else keys
+        ai_hint = _ai_hint(dataset.ai_context)
+        if ai_hint is not None:
+            meta["ai_hint"] = ai_hint
+        if meta:
+            model["meta"] = meta
         model["columns"] = list(columns_by_name.values())
         return model, columns_by_name
 
@@ -337,6 +390,9 @@ class OssieToLightdashConverter:
         definition: Dict[str, Any] = {}
         if metric.description:
             definition["description"] = metric.description
+        ai_hint = _ai_hint(metric.ai_context)
+        if ai_hint is not None:
+            definition["ai_hint"] = ai_hint
 
         # A single aggregation becomes a typed metric: on the column when the
         # operand is one of the dataset's columns, otherwise on the model with

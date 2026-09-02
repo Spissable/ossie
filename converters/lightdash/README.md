@@ -42,16 +42,19 @@ ossie-lightdash import schema.yml semantic_model.json --database analytics_db --
 | ----- | -------------------- |
 | `dataset` | dbt model (`name` = table part of `source`) |
 | `dataset.source` | assembled on import from `--database` / `--schema` / model name |
+| `dataset.primary_key` | model `meta.primary_key` (a single key as a string, a composite key as a list) |
+| `ai_context` on datasets, fields and metrics | `ai_hint` on models, dimensions and metrics; a multi-line instruction is a list of hints, and the synonyms / examples of the structured form are rendered as extra hints on export |
 | `field` (no `dimension`) | plain column entry |
 | `field` with `dimension` | `columns[].meta.dimension` (an empty `dimension: {}` marks a dimension with no extra attributes) |
 | `field.datatype` | `meta.dimension.type` (`String`→`string`, `Integer`/`Decimal`/`Float`→`number`, `Date`→`date`, `DateTime`/`DateTimeTz`→`timestamp`, `Boolean`→`boolean`, `Time`/`Opaque`→`string`); on import `number` maps back to `Decimal` |
-| `field.dimension.is_time` | *not carried* — it is a role marker (a field can be a time axis without a temporal datatype, e.g. a year stored as `Integer`) and Lightdash has no equivalent |
+| `field.dimension.is_time` | `time_intervals: OFF` ↔ an explicit `is_time: false` on a temporal column; otherwise not carried — a non-temporal time axis (e.g. a year stored as `Integer`) has no Lightdash equivalent |
 | `field.label` / `.description` | `meta.dimension.label` / column `description` |
 | `field.expression` (≠ column name) | `meta.dimension.sql` (`dataset.col` ↔ `${TABLE}.col`) |
+| `metric.datatype` | derived on import: `Integer` for counts, `Decimal` for numeric aggregates over a `number` column, the column's type for `min`/`max`, the declared type for `boolean`/`string`/`date`/`timestamp` metrics |
 | `metric` that is one aggregation over a column (`SUM(ds.col)`, `COUNT(DISTINCT ds.col)`, `SUM(DISTINCT ds.col)`, `PERCENTILE_CONT(0.9) WITHIN GROUP (ORDER BY ds.col)`, ...) | column-level `meta.metrics.<name>` with a typed metric (`sum`, `count_distinct`, `sum_distinct`, `percentile` + `percentile: 90`, ...) |
 | `metric` that is one aggregation over any other expression (`AVG(CASE WHEN ds.status = 'done' THEN 1 ELSE 0 END)`) | model-level `meta.metrics.<name>` with the typed metric and the operand as `sql` |
 | `metric` with any other expression | model-level `meta.metrics.<name>` with `type: number` + `sql`, on the dataset that joins every other dataset the expression references (`${joined_model.col}`) |
-| `relationship` | `meta.joins` (`sql_on` built from / parsed into column pairs); the `alias` and other join attributes (`relationship`, `type`, `fields`, ...) travel in the relationship's `lightdash` extension, and a dataset joined more than once from the same model is aliased on export |
+| `relationship` | `meta.joins` (`sql_on` built from / parsed into column pairs, `relationship: many-to-one` unless a stashed one says otherwise); the `alias` and other join attributes (`relationship`, `type`, `fields`, ...) travel in the relationship's `lightdash` extension, and a dataset joined more than once from the same model is aliased on export |
 | `${TABLE}.col`, `${col}`, `${other_model.col}` in Lightdash SQL | `dataset.col` / `other_model.col`; `${alias.col}` is flattened onto the aliased model, `${metric}` is replaced by that metric's expression |
 | Lightdash presentation attributes (`label`, `format`, `round`, `compact`, `group_label`, `hidden`, ...) | `custom_extensions` with `vendor_name: "lightdash"`; on export the extension data is overlaid onto the generated definition (structural keys — `sql`/`label` on dimensions, `sql`/`description` on metrics and `type`/`percentile` on metrics whose expression is a recognised aggregation, `join`/`sql_on` on joins — are protected and cannot be overridden) |
 
@@ -93,8 +96,11 @@ Omitting `--schema` as well is reported as a `SOURCE_UNQUALIFIED` issue.
   the joined dataset (`date_dim.year`) with an `ALIAS_REFERENCE_FLATTENED`
   issue: Ossie has no aliases, so which of several joins to the same dataset
   was meant is not preserved in the expression.
-- **`primary_key` / `unique_keys` are not exported** — Lightdash has no
-  corresponding concept — and consequently cannot be reconstructed on import.
+- **`unique_keys` are not exported** — Lightdash has no corresponding
+  concept — and consequently cannot be reconstructed on import.
+- **A label or `ai_context` on a measure-only field is dropped on export**
+  (`FIELD_ATTRIBUTE_NOT_REPRESENTABLE`): Lightdash keeps both on dimensions
+  only, and writing them would turn the field into a dimension.
 - **`dataset.name` is not preserved when it differs from the source table
   name**: the dbt model is named after the table part of `source`, and the
   import direction derives dataset names from model names. References inside
@@ -107,10 +113,8 @@ Omitting `--schema` as well is reported as a `SOURCE_UNQUALIFIED` issue.
   `DateTimeTz` as `DateTime`.
 - **A measure-only field (no `dimension`) loses its `datatype`**: Lightdash
   carries types on dimensions only, so there is nowhere to put it.
-- **`dimension.is_time` is not carried**, and a field whose datatype is not
-  temporal but is flagged as a time axis is reported with a
-  `TIME_ROLE_NOT_REPRESENTABLE` issue on export.
-- **`ai_context` is not carried** into Lightdash meta.
+- **A non-temporal time axis** (`is_time: true` on an `Integer` year) is
+  reported with a `TIME_ROLE_NOT_REPRESENTABLE` issue on export.
 - **Model-level Lightdash meta beyond `metrics` and `joins`** (`label`,
   `group_details`, `sql_filter`, `order_fields_by`, column
   `additional_dimensions`, ...) is not carried yet.

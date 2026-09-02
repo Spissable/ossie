@@ -48,7 +48,7 @@ from ossie_lightdash.converter_issues import (
     ConverterIssueType,
     ConverterResult,
 )
-from ossie_lightdash.datatype_utils import lightdash_type_to_datatype
+from ossie_lightdash.datatype_utils import lightdash_type_to_datatype, metric_datatype
 from ossie_lightdash.expression_utils import (
     AGGREGATE_TYPES,
     build_aggregation,
@@ -60,8 +60,8 @@ LIGHTDASH_VENDOR_NAME = "lightdash"
 
 # Keys that are structurally encoded in Ossie vocabulary and therefore must NOT
 # be duplicated into the extension (a stale copy would win on export).
-_STRUCTURAL_METRIC_KEYS = {"sql", "description"}
-_STRUCTURAL_DIMENSION_KEYS = {"label", "sql"}
+_STRUCTURAL_METRIC_KEYS = {"sql", "description", "ai_hint"}
+_STRUCTURAL_DIMENSION_KEYS = {"label", "sql", "ai_hint"}
 _STRUCTURAL_JOIN_KEYS = {"join", "sql_on"}
 
 _JOIN_PAIR_RE = re.compile(
@@ -84,6 +84,23 @@ def _lightdash_extension(data: Dict[str, Any]) -> List[OssieCustomExtension]:
             data=json.dumps(data, ensure_ascii=False, sort_keys=True),
         )
     ]
+
+
+def _ai_context(ai_hint: Any) -> Optional[str]:
+    """Lightdash `ai_hint` (a string or a list of strings) as Ossie `ai_context`."""
+    if isinstance(ai_hint, list):
+        return "\n".join(str(hint) for hint in ai_hint) or None
+    if isinstance(ai_hint, str):
+        return ai_hint or None
+    return None
+
+
+def _primary_key(primary_key: Any) -> Optional[List[str]]:
+    if isinstance(primary_key, str):
+        return [primary_key]
+    if isinstance(primary_key, list) and primary_key:
+        return [str(column) for column in primary_key]
+    return None
 
 
 def _unique_name(base: str, used: Set[str]) -> str:
@@ -111,6 +128,7 @@ class _ModelContext:
         self.aliases = aliases
         self.definitions = definitions
         self.issues = issues
+        self.column_types: Dict[str, str] = {}
         self._expressions: Dict[str, Optional[str]] = {}
         self._resolving: Set[str] = set()
 
@@ -271,6 +289,10 @@ class LightdashToOssieConverter:
             definitions[metric_name] = (definition, None)
 
         context = _ModelContext(name, aliases, definitions, issues)
+        for column in model.get("columns") or []:
+            dimension_meta = (column.get("meta") or {}).get("dimension") or {}
+            if dimension_meta.get("type"):
+                context.column_types[column["name"]] = dimension_meta["type"]
 
         fields: List[OssieField] = []
         for column in model.get("columns") or []:
@@ -295,6 +317,8 @@ class LightdashToOssieConverter:
             name=name,
             source=source,
             description=model.get("description"),
+            primary_key=_primary_key(model_meta.get("primary_key")),
+            ai_context=_ai_context(model_meta.get("ai_hint")),
             fields=fields or None,
         )
         return dataset, metrics, relationships
@@ -309,23 +333,32 @@ class LightdashToOssieConverter:
         dimension: Optional[OssieDimension] = None
         datatype = None
         label: Optional[str] = None
+        ai_context: Optional[str] = None
         extension_data: Dict[str, Any] = {}
         if dimension_meta is not None:
             label = dimension_meta.get("label")
+            ai_context = _ai_context(dimension_meta.get("ai_hint"))
             if dimension_meta.get("sql"):
                 rewritten = context.rewrite(dimension_meta["sql"], column_name)
                 if rewritten is None:
                     return None
                 expression = rewritten
             datatype = lightdash_type_to_datatype(dimension_meta.get("type"))
-            # `is_time` is a role marker in Ossie, not a type: Lightdash has no
-            # equivalent, so it is left unset rather than inferred from the type
-            # (the type itself is carried by `datatype`).
-            dimension = OssieDimension()
+            # `is_time` is a role marker in Ossie, not a type. Lightdash's only
+            # role marker is `time_intervals: OFF`, which withdraws a temporal
+            # column from the time axis; otherwise `is_time` is left unset so
+            # the datatype decides.
+            excluded = set(_STRUCTURAL_DIMENSION_KEYS)
+            time_intervals = dimension_meta.get("time_intervals")
+            if time_intervals is False or time_intervals == "OFF":
+                dimension = OssieDimension(is_time=False)
+                excluded.add("time_intervals")
+            else:
+                dimension = OssieDimension()
             extension_data = {
                 key: value
                 for key, value in dimension_meta.items()
-                if key not in _STRUCTURAL_DIMENSION_KEYS
+                if key not in excluded
             }
 
         return OssieField(
@@ -335,6 +368,7 @@ class LightdashToOssieConverter:
             datatype=datatype,
             label=label,
             description=column.get("description"),
+            ai_context=ai_context,
             custom_extensions=_lightdash_extension(extension_data) or None,
         )
 
@@ -372,7 +406,12 @@ class LightdashToOssieConverter:
         return OssieMetric(
             name=metric_name,
             expression=_expression(expression, self._dialect),
+            datatype=metric_datatype(
+                lightdash_type,
+                context.column_types.get(column) if not definition.get("sql") else None,
+            ),
             description=definition.get("description"),
+            ai_context=_ai_context(definition.get("ai_hint")),
             custom_extensions=_lightdash_extension(extension_data) or None,
         )
 

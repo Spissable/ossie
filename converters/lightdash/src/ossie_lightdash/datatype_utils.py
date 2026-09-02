@@ -71,6 +71,41 @@ def lightdash_type_to_datatype(lightdash_type: Optional[str]) -> Optional[OssieD
     return _LIGHTDASH_TO_DATATYPE.get(lightdash_type)
 
 
+_COUNT_TYPES = {"count", "count_distinct"}
+_NUMERIC_AGGREGATES = {
+    "sum", "sum_distinct", "average", "average_distinct", "median", "percentile"
+}
+_ORDER_AGGREGATES = {"min", "max"}
+_VALUE_TYPES = {
+    "boolean": OssieDataType.BOOLEAN,
+    "string": OssieDataType.STRING,
+    "date": OssieDataType.DATE,
+    "timestamp": OssieDataType.DATE_TIME,
+}
+
+
+def metric_datatype(
+    lightdash_type: str, column_type: Optional[str]
+) -> Optional[OssieDataType]:
+    """The Ossie datatype of a Lightdash metric's result, when it is implied.
+
+    Counts are integers; numeric aggregates over a `number` column are
+    decimals; min/max keep the column's type; value-typed metrics (`boolean`,
+    `string`, `date`, `timestamp`) declare their own type. Anything else
+    (`number` with arbitrary SQL, aggregates over untyped columns) is left
+    unset rather than guessed.
+    """
+    if lightdash_type in _COUNT_TYPES:
+        return OssieDataType.INTEGER
+    if lightdash_type in _VALUE_TYPES:
+        return _VALUE_TYPES[lightdash_type]
+    if lightdash_type in _NUMERIC_AGGREGATES and column_type == "number":
+        return OssieDataType.DECIMAL
+    if lightdash_type in _ORDER_AGGREGATES:
+        return lightdash_type_to_datatype(column_type)
+    return None
+
+
 def is_temporal(datatype: Optional[OssieDataType]) -> bool:
     """True when the datatype represents a point in time."""
     return datatype in _TEMPORAL

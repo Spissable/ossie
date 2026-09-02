@@ -28,6 +28,8 @@ SCHEMA_YML = {
             "name": "orders",
             "description": "One row per order",
             "meta": {
+                "primary_key": "order_id",
+                "ai_hint": ["Orders placed in the web shop.", "One row per order."],
                 "joins": [
                     {
                         "join": "customers",
@@ -52,18 +54,39 @@ SCHEMA_YML = {
                 },
                 {
                     "name": "status",
-                    "meta": {"dimension": {"label": "Status", "type": "string"}},
+                    "meta": {
+                        "dimension": {
+                            "label": "Status",
+                            "type": "string",
+                            "ai_hint": "Order lifecycle stage.",
+                        }
+                    },
+                },
+                {
+                    "name": "updated_at",
+                    "meta": {
+                        "dimension": {"type": "timestamp", "time_intervals": "OFF"}
+                    },
+                },
+                {
+                    "name": "shipped_at",
+                    "meta": {
+                        "dimension": {"type": "timestamp", "time_intervals": ["DAY", "MONTH"]}
+                    },
                 },
                 {
                     "name": "amount",
                     "description": "Order amount",
                     "meta": {
+                        "dimension": {"type": "number"},
                         "metrics": {
                             "total_amount": {
                                 "type": "sum",
                                 "label": "Total amount",
                                 "format": "usd",
+                                "ai_hint": "Revenue before refunds.",
                             },
+                            "latest_amount": {"type": "max"},
                             "median_amount": {"type": "median"},
                             "p90_amount": {"type": "percentile", "percentile": 90},
                         }
@@ -83,6 +106,7 @@ SCHEMA_YML = {
         },
         {
             "name": "customers",
+            "meta": {"primary_key": ["customer_id", "region"]},
             "columns": [{"name": "customer_id"}],
         },
     ],
@@ -132,6 +156,14 @@ class TestLightdashToOssie:
         # marker with no Lightdash source, so it stays unset.
         assert field.datatype is OssieDataType.DATE
         assert field.dimension.is_time is None
+        withdrawn = result.output.semantic_model[0].datasets[0].fields[2]
+        assert withdrawn.name == "updated_at"
+        assert withdrawn.dimension.is_time is False
+        assert _lightdash_data(withdrawn) == {"type": "timestamp"}
+        # A custom interval list is not a role marker: it stays in the extension.
+        custom = result.output.semantic_model[0].datasets[0].fields[3]
+        assert custom.dimension.is_time is None
+        assert _lightdash_data(custom) == {"type": "timestamp", "time_intervals": ["DAY", "MONTH"]}
 
     def test_dimension_types_become_datatypes(self):
         result = LightdashToOssieConverter().convert(SCHEMA_YML, schema="marts")
@@ -147,6 +179,7 @@ class TestLightdashToOssie:
         metric = _metric(result.output, "total_amount")
         assert metric.expression.dialects[0].expression == "SUM(orders.amount)"
         assert _lightdash_data(metric) == {"label": "Total amount", "format": "usd"}
+        assert metric.ai_context == "Revenue before refunds."
 
     def test_count_distinct_metric(self):
         result = LightdashToOssieConverter().convert(SCHEMA_YML, schema="marts")
@@ -473,3 +506,20 @@ class TestLightdashToOssie:
         assert [d.dialect for d in metric.expression.dialects] == [OssieDialect.BIGQUERY]
         field = result.output.semantic_model[0].datasets[0].fields[0]
         assert field.expression.dialects[0].dialect is OssieDialect.BIGQUERY
+
+    def test_primary_key_and_ai_hint_become_dataset_attributes(self):
+        result = LightdashToOssieConverter().convert(SCHEMA_YML, schema="marts")
+        orders, customers = result.output.semantic_model[0].datasets
+        assert orders.primary_key == ["order_id"]
+        assert orders.ai_context == "Orders placed in the web shop.\nOne row per order."
+        assert customers.primary_key == ["customer_id", "region"]
+        status = next(field for field in orders.fields if field.name == "status")
+        assert status.ai_context == "Order lifecycle stage."
+        assert _lightdash_data(status) == {"type": "string"}
+
+    def test_metric_datatypes_follow_the_aggregation(self):
+        result = LightdashToOssieConverter().convert(SCHEMA_YML, schema="marts")
+        assert _metric(result.output, "unique_customers").datatype is OssieDataType.INTEGER
+        assert _metric(result.output, "total_amount").datatype is OssieDataType.DECIMAL
+        assert _metric(result.output, "latest_amount").datatype is OssieDataType.DECIMAL
+        assert _metric(result.output, "conversion_rate").datatype is None

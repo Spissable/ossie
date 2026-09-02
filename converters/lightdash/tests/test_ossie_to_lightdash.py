@@ -18,7 +18,9 @@
 import json
 
 from ossie import (
+    OssieAIContextObject,
     OssieCustomExtension,
+    OssieDataType,
     OssieDataset,
     OssieDialect,
     OssieDialectExpression,
@@ -369,6 +371,7 @@ class TestOssieToLightdash:
             {
                 "join": "customers",
                 "sql_on": "${orders.customer_id} = ${customers.customer_id}",
+                "relationship": "many-to-one",
             }
         ]
 
@@ -408,11 +411,13 @@ class TestOssieToLightdash:
             {
                 "join": "customers",
                 "sql_on": "${orders.customer_id} = ${customers.customer_id}",
+                "relationship": "many-to-one",
             },
             {
                 "join": "customers",
                 "alias": "orders_to_referrer",
                 "sql_on": "${orders.amount} = ${orders_to_referrer.customer_id}",
+                "relationship": "many-to-one",
             },
         ]
 
@@ -445,3 +450,73 @@ class TestOssieToLightdash:
                 "relationship": "many-to-one",
             }
         ]
+
+    def test_primary_key_and_ai_context_become_model_meta(self):
+        document = _document()
+        tampered = document.model_copy(deep=True)
+        datasets = tampered.semantic_model[0].datasets
+        datasets[0] = datasets[0].model_copy(
+            update={
+                "primary_key": ["order_id"],
+                "ai_context": "Orders placed in the web shop.\nOne row per order.",
+            }
+        )
+        datasets[1] = datasets[1].model_copy(
+            update={
+                "primary_key": ["customer_id", "region"],
+                "ai_context": OssieAIContextObject(
+                    instructions="Customer master data.",
+                    synonyms=("clients", "buyers"),
+                ),
+            }
+        )
+        result = OssieToLightdashConverter().convert(tampered)
+        orders_meta = _model(result.output, "orders")["meta"]
+        assert orders_meta["primary_key"] == "order_id"
+        assert orders_meta["ai_hint"] == [
+            "Orders placed in the web shop.",
+            "One row per order.",
+        ]
+        customers_meta = _model(result.output, "customers")["meta"]
+        assert customers_meta["primary_key"] == ["customer_id", "region"]
+        assert customers_meta["ai_hint"] == [
+            "Customer master data.",
+            "Also known as: clients, buyers",
+        ]
+
+    def test_field_and_metric_ai_context_become_ai_hints(self):
+        document = _document()
+        tampered = document.model_copy(deep=True)
+        orders = tampered.semantic_model[0].datasets[0]
+        orders.fields[1] = orders.fields[1].model_copy(update={"ai_context": "Order lifecycle stage."})
+        # A measure-only field cannot carry the hint without becoming a dimension.
+        orders.fields[2] = orders.fields[2].model_copy(update={"ai_context": "Gross amount."})
+        metrics = tampered.semantic_model[0].metrics
+        metrics[0] = metrics[0].model_copy(update={"ai_context": "Revenue before refunds."})
+        result = OssieToLightdashConverter().convert(tampered)
+        model = _model(result.output, "orders")
+        assert _column(model, "status")["meta"]["dimension"]["ai_hint"] == "Order lifecycle stage."
+        assert "dimension" not in _column(model, "amount")["meta"]
+        assert _column(model, "amount")["meta"]["metrics"]["total_amount"]["ai_hint"] == (
+            "Revenue before refunds."
+        )
+        assert [
+            issue.element_name
+            for issue in result.issues
+            if issue.issue_type is ConverterIssueType.FIELD_ATTRIBUTE_NOT_REPRESENTABLE
+        ] == ["amount"]
+
+    def test_time_axis_withdrawn_becomes_time_intervals_off(self):
+        document = _document()
+        tampered = document.model_copy(deep=True)
+        orders = tampered.semantic_model[0].datasets[0]
+        orders.fields[0] = orders.fields[0].model_copy(
+            update={"datatype": OssieDataType.DATE, "dimension": OssieDimension(is_time=False)}
+        )
+        result = OssieToLightdashConverter().convert(tampered)
+        column = _column(_model(result.output, "orders"), "order_date")
+        assert column["meta"]["dimension"] == {
+            "label": "Order date",
+            "type": "date",
+            "time_intervals": "OFF",
+        }
