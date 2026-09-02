@@ -42,7 +42,7 @@ ossie-lightdash import schema.yml semantic_model.json --database analytics_db --
 | ----- | -------------------- |
 | `dataset` | dbt model (`name` = table part of `source`) |
 | `dataset.source` | assembled on import from `--database` / `--schema` / model name |
-| `dataset.primary_key` | model `meta.primary_key` (a single key as a string, a composite key as a list) |
+| `dataset.primary_key` | model `meta.primary_key` (a single key exports as a string, a composite key as a list) |
 | `ai_context` on datasets, fields and metrics | `ai_hint` on models, dimensions and metrics; a multi-line instruction is a list of hints, and the synonyms / examples of the structured form are rendered as extra hints on export |
 | `field` (no `dimension`) | plain column entry |
 | `field` with `dimension` | `columns[].meta.dimension` (an empty `dimension: {}` marks a dimension with no extra attributes) |
@@ -56,6 +56,8 @@ ossie-lightdash import schema.yml semantic_model.json --database analytics_db --
 | `metric` that is one aggregation over any other expression (`AVG(CASE WHEN ds.status = 'done' THEN 1 ELSE 0 END)`) | model-level `meta.metrics.<name>` with the typed metric and the operand as `sql` |
 | `metric` with any other expression | model-level `meta.metrics.<name>` with `type: number` + `sql`, on the dataset that joins every other dataset the expression references (`${joined_model.col}`) |
 | `relationship` | `meta.joins` (`sql_on` built from / parsed into column pairs, `relationship: many-to-one` unless a stashed one says otherwise); the `alias` and other join attributes (`relationship`, `type`, `fields`, ...) travel in the relationship's `lightdash` extension, and a dataset joined more than once from the same model is aliased on export |
+| a join Ossie cannot reproduce — chained through another joined model (`${projects.org_id} = ${organizations.org_id}` on the `queries` explore), an expression join (`LOWER(a) = b`), extra conditions | the column pairs still become relationships (a chained pair derives the edge between the two models it names, unless that model declares it itself); the join is stashed verbatim on the dataset's `lightdash` extension and restored on export, replacing the generated join to the same target and alias. Pair order and side order (`${T.y} = ${M.x}`) are not semantic and need no stash |
+| model meta without Ossie vocabulary (`label`, `hidden`, `sql_filter`, `group_details`, `default_time_dimension`, `required_filters`, `order_fields_by`, ...) and column meta outside `dimension` / `metrics` (`additional_dimensions`, ...) | stashed on the dataset's / field's `lightdash` extension (the latter under `column_meta`) and restored on export; invisible to other consumers |
 | bare column names in Lightdash SQL (`SUM(budget_use)`) | qualified with the dataset when they name one of the model's columns (outside string literals, not when called as a function); the hosting model is also stashed as `model` so an expression that names no dataset can still be placed on export |
 | `${TABLE}.col`, `${col}`, `${other_model.col}` in Lightdash SQL | `dataset.col` / `other_model.col`; `${alias.col}` is flattened onto the aliased model, `${metric}` is replaced by that metric's expression |
 | Lightdash presentation attributes (`label`, `format`, `round`, `compact`, `group_label`, `hidden`, ...) | `custom_extensions` with `vendor_name: "lightdash"`; on export the extension data is overlaid onto the generated definition (structural keys — `sql`/`label` on dimensions, `sql`/`description` on metrics and `type`/`percentile` on metrics whose expression is a recognised aggregation, `join`/`sql_on` on joins — are protected and cannot be overridden) |
@@ -91,6 +93,18 @@ is usually environment-dependent in dbt projects, and a database-less source
 keeps one document valid across environments (see
 [dbt-core#15649](https://github.com/dbt-labs/dbt-core/issues/15649)).
 Omitting `--schema` as well is reported as a `SOURCE_UNQUALIFIED` issue.
+
+## Issues
+
+Every loss or approximation is reported as a `ConverterIssue`: on import
+`JOIN_STASHED` / `JOIN_SQL_UNPARSED` (a join kept for Lightdash only),
+`JOIN_TARGET_UNKNOWN`, `EXPRESSION_NOT_PORTABLE`, `METRIC_REFERENCE_INLINED`,
+`ALIAS_REFERENCE_FLATTENED`, `METRIC_NAME_COLLISION`, `SOURCE_UNQUALIFIED`,
+`METRIC_SQL_MISSING`; on export `CROSS_DATASET_METRIC_DROPPED`,
+`FIELD_REFERENCE_UNJOINED`, `FIELD_ATTRIBUTE_NOT_REPRESENTABLE`,
+`TIME_ROLE_NOT_REPRESENTABLE`, `DIALECT_UNAVAILABLE`,
+`RELATIONSHIP_COLUMNS_MISMATCHED`, `EXTENSION_DATA_INVALID`,
+`FOREIGN_EXTENSION_IGNORED`.
 
 ## Known limitations
 
@@ -139,9 +153,11 @@ Omitting `--schema` as well is reported as a `SOURCE_UNQUALIFIED` issue.
   carries types on dimensions only, so there is nowhere to put it.
 - **A non-temporal time axis** (`is_time: true` on an `Integer` year) is
   reported with a `TIME_ROLE_NOT_REPRESENTABLE` issue on export.
-- **Model-level Lightdash meta beyond `metrics` and `joins`** (`label`,
-  `group_details`, `sql_filter`, `order_fields_by`, column
-  `additional_dimensions`, ...) is not carried yet.
+- **Stashed meta is Lightdash-only.** Model meta without Ossie vocabulary and
+  joins Ossie cannot reproduce round-trip exactly through the dataset's
+  extension, but other consumers do not see them; `sql_filter` in particular
+  restricts every Lightdash query while the Ossie dataset does not (a query
+  `source` would carry it, not done yet).
 - **Standalone Lightdash YAML projects** (Lightdash without dbt) are not
   supported yet; the converter targets the dbt-meta flavour.
 - Custom extensions from other vendors are ignored on export (reported as

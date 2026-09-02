@@ -64,10 +64,34 @@ LIGHTDASH_VENDOR_NAME = "lightdash"
 _STRUCTURAL_METRIC_KEYS = {"sql", "description", "ai_hint", "name", "model"}
 _STRUCTURAL_DIMENSION_KEYS = {"label", "sql", "ai_hint"}
 _STRUCTURAL_JOIN_KEYS = {"join", "sql_on"}
+# Model meta with Ossie vocabulary; everything else is stashed on the dataset.
+_HANDLED_MODEL_KEYS = {"metrics", "joins", "primary_key", "ai_hint"}
+_HANDLED_COLUMN_KEYS = {"dimension", "metrics"}
 
 _JOIN_PAIR_RE = re.compile(
     r"\$\{(\w+)\.(\w+)\}\s*=\s*\$\{(\w+)\.(\w+)\}",
 )
+
+
+class _Edge:
+    """A relationship derived from a join, before de-duplication."""
+
+    def __init__(self, from_model, to_model, from_columns, to_columns, reference, extras):
+        self.from_model = from_model
+        self.to_model = to_model
+        self.from_columns = from_columns
+        self.to_columns = to_columns
+        self.reference = reference
+        self.extras = extras
+
+    @property
+    def columns_key(self):
+        return (self.from_model, self.to_model, tuple(self.from_columns), tuple(self.to_columns))
+
+    @property
+    def key(self):
+        # An aliased join is a distinct relationship even on the same columns.
+        return (*self.columns_key, self.reference)
 
 
 def _expression(expression: str, dialect: OssieDialect) -> OssieExpression:
@@ -252,35 +276,59 @@ class LightdashToOssieConverter:
         relationships: List[OssieRelationship] = []
         relationship_names: Set[str] = set()
         metric_names: Set[str] = set()
+        direct_edges: List[_Edge] = []
+        derived_edges: List[_Edge] = []
 
         # Seeds are tables to Lightdash just like models.
         nodes = [*(schema_yml.get("models") or []), *(schema_yml.get("seeds") or [])]
         for model in nodes:
-            dataset, model_metrics, model_relationships = self._convert_model(
+            dataset, model_metrics, model_direct, model_derived = self._convert_model(
                 model,
                 database=database,
                 schema=schema,
                 issues=issues,
-                relationship_names=relationship_names,
                 metric_names=metric_names,
             )
             datasets.append(dataset)
             metrics.extend(model_metrics)
-            relationships.extend(model_relationships)
+            direct_edges.extend(model_direct)
+            derived_edges.extend(model_derived)
 
+        # Edges a model declares itself come first, so an edge that a chained
+        # join merely passes through does not shadow the declared one.
         dataset_names = {dataset.name for dataset in datasets}
-        known_relationships: List[OssieRelationship] = []
-        for relationship in relationships:
-            if relationship.to in dataset_names:
-                known_relationships.append(relationship)
-            else:
+        seen_edges: Set[tuple] = set()
+        seen_columns: Set[tuple] = set()
+        for edge in [*direct_edges, *derived_edges]:
+            if edge.to_model not in dataset_names or edge.from_model not in dataset_names:
                 issues.append(
                     ConverterIssue(
                         issue_type=ConverterIssueType.JOIN_TARGET_UNKNOWN,
-                        element_name=f"{relationship.from_dataset} -> {relationship.to}",
+                        element_name=f"{edge.from_model} -> {edge.to_model}",
                     )
                 )
-        relationships = known_relationships
+                continue
+            derived = edge in derived_edges
+            # A derived edge is redundant with any declared edge on the same
+            # columns; a declared edge is redundant only with an identical one.
+            if (derived and edge.columns_key in seen_columns) or edge.key in seen_edges:
+                continue
+            seen_edges.add(edge.key)
+            seen_columns.add(edge.columns_key)
+            relationships.append(
+                OssieRelationship.model_validate(
+                    {
+                        "name": _unique_name(
+                            f"{edge.from_model}_to_{edge.reference}", relationship_names
+                        ),
+                        "from": edge.from_model,
+                        "to": edge.to_model,
+                        "from_columns": edge.from_columns,
+                        "to_columns": edge.to_columns,
+                        "custom_extensions": _lightdash_extension(edge.extras) or None,
+                    }
+                )
+            )
 
         document = OssieDocument(
             version="0.2.0.dev0",
@@ -302,9 +350,8 @@ class LightdashToOssieConverter:
         database: Optional[str],
         schema: Optional[str],
         issues: List[ConverterIssue],
-        relationship_names: Set[str],
         metric_names: Set[str],
-    ) -> Tuple[OssieDataset, List[OssieMetric], List[OssieRelationship]]:
+    ) -> Tuple[OssieDataset, List[OssieMetric], List[_Edge], List[_Edge]]:
         name = model["name"]
         source = ".".join(part for part in [database, schema, name] if part)
         if schema is None:
@@ -354,12 +401,17 @@ class LightdashToOssieConverter:
             if metric is not None:
                 metrics.append(metric)
 
-        relationships = self._convert_joins(
-            joins,
-            from_model=name,
-            issues=issues,
-            relationship_names=relationship_names,
+        direct_edges, derived_edges, stashed_joins = self._convert_joins(
+            joins, from_model=name, aliases=aliases, issues=issues
         )
+
+        # Model meta without Ossie vocabulary, and joins Ossie cannot reproduce
+        # exactly, travel on the dataset so export restores the explore as is.
+        stash = {
+            key: value for key, value in model_meta.items() if key not in _HANDLED_MODEL_KEYS
+        }
+        if stashed_joins:
+            stash["joins"] = stashed_joins
 
         dataset = OssieDataset(
             name=name,
@@ -368,14 +420,16 @@ class LightdashToOssieConverter:
             primary_key=_primary_key(model_meta.get("primary_key")),
             ai_context=_ai_context(model_meta.get("ai_hint")),
             fields=fields or None,
+            custom_extensions=_lightdash_extension(stash) or None,
         )
-        return dataset, metrics, relationships
+        return dataset, metrics, direct_edges, derived_edges
 
     def _convert_column(
         self, column: Dict[str, Any], context: _ModelContext
     ) -> Optional[OssieField]:
         column_name = column["name"]
-        dimension_meta = lightdash_meta(column).get("dimension")
+        column_meta = lightdash_meta(column)
+        dimension_meta = column_meta.get("dimension")
 
         expression = column_name
         dimension: Optional[OssieDimension] = None
@@ -408,6 +462,11 @@ class LightdashToOssieConverter:
                 for key, value in dimension_meta.items()
                 if key not in excluded
             }
+        column_extras = {
+            key: value for key, value in column_meta.items() if key not in _HANDLED_COLUMN_KEYS
+        }
+        if column_extras:
+            extension_data["column_meta"] = column_extras
 
         return OssieField(
             name=column_name,
@@ -484,51 +543,86 @@ class LightdashToOssieConverter:
         joins: List[Dict[str, Any]],
         *,
         from_model: str,
+        aliases: Dict[str, str],
         issues: List[ConverterIssue],
-        relationship_names: Set[str],
-    ) -> List[OssieRelationship]:
-        relationships: List[OssieRelationship] = []
+    ) -> Tuple[List[_Edge], List[_Edge], List[Dict[str, Any]]]:
+        """Relationships and stashed joins for one model's explore.
+
+        A pair ``${M.x} = ${T.y}`` on model M's join to T is a direct edge
+        M -> T. A pair through another model already joined in the explore,
+        ``${A.x} = ${T.y}``, is a chained join: the edge A -> T is derived and
+        the join itself is stashed verbatim, since Ossie relationships cannot
+        say which explore includes it. A join whose ``sql_on`` the export
+        direction would not rebuild identically (extra conditions, expression
+        joins) is stashed the same way.
+        """
+        direct: List[_Edge] = []
+        derived: List[_Edge] = []
+        stashed: List[Dict[str, Any]] = []
+        joined = {from_model}
         for join in joins:
             to_model = join.get("join")
-            # An aliased join is referenced by its alias in `sql_on`.
+            if not to_model:
+                stashed.append(join)
+                continue
             reference = join.get("alias") or to_model
+            joined.add(reference)
             pairs = _JOIN_PAIR_RE.findall(join.get("sql_on") or "")
-            from_columns: List[str] = []
-            to_columns: List[str] = []
+            direct_columns: Tuple[List[str], List[str]] = ([], [])
+            chained: Dict[str, Tuple[List[str], List[str]]] = {}
             for left_table, left_column, right_table, right_column in pairs:
-                if left_table == from_model and right_table == reference:
-                    from_columns.append(left_column)
-                    to_columns.append(right_column)
-                elif left_table == reference and right_table == from_model:
-                    from_columns.append(right_column)
-                    to_columns.append(left_column)
-            if not to_model or not from_columns:
+                if left_table == reference:
+                    other, other_column, target_column = right_table, right_column, left_column
+                elif right_table == reference:
+                    other, other_column, target_column = left_table, left_column, right_column
+                else:
+                    continue
+                if other == from_model:
+                    direct_columns[0].append(other_column)
+                    direct_columns[1].append(target_column)
+                elif other in joined:
+                    columns = chained.setdefault(other, ([], []))
+                    columns[0].append(other_column)
+                    columns[1].append(target_column)
+            extras = {
+                key: value for key, value in join.items() if key not in _STRUCTURAL_JOIN_KEYS
+            }
+            if direct_columns[0]:
+                direct.append(
+                    _Edge(from_model, to_model, *direct_columns, reference, extras)
+                )
+            for other, (other_columns, target_columns) in chained.items():
+                derived.append(
+                    _Edge(aliases.get(other, other), to_model, other_columns, target_columns, to_model, {})
+                )
+            # Pair order and side order are not semantic: `${T.y} = ${M.x}`
+            # rebuilds as `${M.x} = ${T.y}` without needing a stash.
+            rebuilt_pairs = {
+                (from_model, left, reference, right) for left, right in zip(*direct_columns)
+            }
+            original_pairs = {
+                (a, b, c, d) if a == from_model else (c, d, a, b)
+                for a, b, c, d in pairs
+            }
+            residue = _JOIN_PAIR_RE.sub("", join.get("sql_on") or "")
+            reproducible = (
+                original_pairs == rebuilt_pairs
+                and not residue.replace("AND", "").replace("and", "").strip()
+            )
+            if not direct_columns[0] and not chained:
                 issues.append(
                     ConverterIssue(
                         issue_type=ConverterIssueType.JOIN_SQL_UNPARSED,
-                        element_name=f"{from_model} -> {to_model or '<unknown>'}",
+                        element_name=f"{from_model} -> {to_model}",
                     )
                 )
-                continue
-            # The alias and any other join attributes (type, relationship,
-            # fields, ...) have no Ossie vocabulary and travel in the extension.
-            extras = {
-                key: value
-                for key, value in join.items()
-                if key not in _STRUCTURAL_JOIN_KEYS
-            }
-            relationships.append(
-                OssieRelationship.model_validate(
-                    {
-                        "name": _unique_name(
-                            f"{from_model}_to_{reference}", relationship_names
-                        ),
-                        "from": from_model,
-                        "to": to_model,
-                        "from_columns": from_columns,
-                        "to_columns": to_columns,
-                        "custom_extensions": _lightdash_extension(extras) or None,
-                    }
+                stashed.append(join)
+            elif chained or not reproducible:
+                issues.append(
+                    ConverterIssue(
+                        issue_type=ConverterIssueType.JOIN_STASHED,
+                        element_name=f"{from_model} -> {to_model}",
+                    )
                 )
-            )
-        return relationships
+                stashed.append(join)
+        return direct, derived, stashed

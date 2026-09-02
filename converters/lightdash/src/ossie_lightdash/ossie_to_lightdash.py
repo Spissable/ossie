@@ -61,10 +61,12 @@ LIGHTDASH_VENDOR_NAME = "lightdash"
 # from overriding the Ossie-derived definition. ``type`` stays overridable on
 # metrics whose expression is not a recognised aggregation: it is the channel
 # for types an expression cannot express (``boolean``, ``string``, ...).
-_PROTECTED_DIMENSION_KEYS = {"sql", "label", "ai_hint"}
+_PROTECTED_DIMENSION_KEYS = {"sql", "label", "ai_hint", "column_meta"}
 _PROTECTED_METRIC_KEYS = {"sql", "description", "ai_hint", "name", "model"}
 _PROTECTED_AGGREGATION_KEYS = _PROTECTED_METRIC_KEYS | {"type", "percentile"}
 _PROTECTED_JOIN_KEYS = {"join", "sql_on", "alias"}
+# Dataset-level stash keys that map to Ossie vocabulary or are handled apart.
+_PROTECTED_MODEL_KEYS = {"joins", "metrics", "primary_key", "ai_hint"}
 
 # Joins a dataset declares, keyed by the joined dataset: the name Lightdash SQL
 # uses to reference it (the joined model, or its alias). The first join to a
@@ -194,10 +196,45 @@ class OssieToLightdashConverter:
 
         models_by_dataset: Dict[str, Dict[str, Any]] = {}
         columns_by_dataset: Dict[str, Dict[str, Dict[str, Any]]] = {}
+        stash_by_dataset: Dict[str, Dict[str, Any]] = {}
+        for dataset in datasets:
+            stash = _lightdash_extension_data(dataset, issues)
+            stash_by_dataset[dataset.name] = stash
+            # A stashed join (chained, expression, extra conditions) is
+            # restored verbatim, replacing the generated join to the same
+            # target and alias, and its target becomes referenceable.
+            joins = joins_by_dataset.setdefault(dataset.name, [])
+            references = references_by_dataset.setdefault(dataset.name, {})
+            for stashed_join in stash.get("joins") or []:
+                if not isinstance(stashed_join, dict) or not stashed_join.get("join"):
+                    continue
+                key = (stashed_join.get("join"), stashed_join.get("alias"))
+                for index, join in enumerate(joins):
+                    if (join.get("join"), join.get("alias")) == key:
+                        joins[index] = stashed_join
+                        break
+                else:
+                    joins.append(stashed_join)
+                references.setdefault(
+                    stashed_join["join"], stashed_join.get("alias") or stashed_join["join"]
+                )
+            if not joins:
+                del joins_by_dataset[dataset.name]
+
         for dataset in datasets:
             model, columns = self._convert_dataset(
                 dataset, dataset_names, references_by_dataset.get(dataset.name, {}), issues
             )
+            meta = model.setdefault("meta", {})
+            meta.update(
+                {
+                    key: value
+                    for key, value in stash_by_dataset[dataset.name].items()
+                    if key not in _PROTECTED_MODEL_KEYS
+                }
+            )
+            if not meta:
+                del model["meta"]
             models_by_dataset[dataset.name] = model
             columns_by_dataset[dataset.name] = columns
 
@@ -351,10 +388,11 @@ class OssieToLightdashConverter:
                 dimension["sql"] = ossie_sql_to_lightdash(
                     expression, dataset.name, references
                 )
+            field_data = _lightdash_extension_data(field, issues)
             dimension.update(
                 {
                     key: value
-                    for key, value in _lightdash_extension_data(field, issues).items()
+                    for key, value in field_data.items()
                     if key not in _PROTECTED_DIMENSION_KEYS
                 }
             )
@@ -363,6 +401,15 @@ class OssieToLightdashConverter:
             # or the import direction could not reconstruct it.
             if dimension or field.dimension is not None:
                 column["meta"] = {"dimension": dimension}
+            column_meta = field_data.get("column_meta")
+            if isinstance(column_meta, dict) and column_meta:
+                column.setdefault("meta", {}).update(
+                    {
+                        key: value
+                        for key, value in column_meta.items()
+                        if key not in ("dimension", "metrics")
+                    }
+                )
             columns_by_name[field.name] = column
 
         model: Dict[str, Any] = {"name": _model_name_for(dataset)}

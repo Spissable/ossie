@@ -588,3 +588,82 @@ class TestOssieToLightdash:
             for issue in result.issues
             if issue.issue_type is ConverterIssueType.CROSS_DATASET_METRIC_DROPPED
         ] == ["unplaceable"]
+
+    def test_stashed_joins_and_meta_restore_the_explore(self):
+        document = _document()
+        tampered = document.model_copy(deep=True)
+        datasets = tampered.semantic_model[0].datasets
+        datasets[0] = datasets[0].model_copy(
+            update={
+                "custom_extensions": [
+                    OssieCustomExtension(
+                        vendor_name="lightdash",
+                        data=json.dumps(
+                            {
+                                "sql_filter": "${TABLE}.deleted = false",
+                                "joins": [
+                                    {
+                                        "join": "customers",
+                                        "sql_on": "${orders.customer_id} = ${customers.customer_id} AND ${customers.active}",
+                                    },
+                                    {"join": "regions", "sql_on": "${customers.region_id} = ${regions.id}"},
+                                ],
+                            }
+                        ),
+                    )
+                ]
+            }
+        )
+        datasets[1] = datasets[1].model_copy(
+            update={
+                "fields": [
+                    datasets[1].fields[0].model_copy(
+                        update={
+                            "custom_extensions": [
+                                OssieCustomExtension(
+                                    vendor_name="lightdash",
+                                    data=json.dumps({"column_meta": {"additional_dimensions": {"id_prefix": {"type": "string", "sql": "LEFT(${TABLE}.customer_id, 2)"}}}}),
+                                )
+                            ]
+                        }
+                    )
+                ]
+            }
+        )
+        regions = OssieDataset(
+            name="regions",
+            source="analytics_db.marts.regions",
+            fields=[OssieField(name="id", expression=_ansi("id"))],
+        )
+        tampered.semantic_model[0] = tampered.semantic_model[0].model_copy(
+            update={
+                "datasets": [*datasets, regions],
+                "metrics": [
+                    OssieMetric(
+                        name="regional_spread",
+                        expression=_ansi("COUNT(orders.customer_id) / COUNT(DISTINCT regions.id)"),
+                    ),
+                ],
+            }
+        )
+        result = OssieToLightdashConverter().convert(tampered)
+        orders = _model(result.output, "orders")
+        # The stashed join replaces the generated one to the same target and
+        # the chained join is appended; the model meta comes back as is.
+        assert orders["meta"]["joins"] == [
+            {
+                "join": "customers",
+                "sql_on": "${orders.customer_id} = ${customers.customer_id} AND ${customers.active}",
+            },
+            {"join": "regions", "sql_on": "${customers.region_id} = ${regions.id}"},
+        ]
+        assert orders["meta"]["sql_filter"] == "${TABLE}.deleted = false"
+        # A metric over the chained target resolves through the stashed join.
+        assert orders["meta"]["metrics"]["regional_spread"] == {
+            "type": "number",
+            "sql": "COUNT(${TABLE}.customer_id) / COUNT(DISTINCT ${regions.id})",
+        }
+        customer_id = _column(_model(result.output, "customers"), "customer_id")
+        assert customer_id["meta"]["additional_dimensions"] == {
+            "id_prefix": {"type": "string", "sql": "LEFT(${TABLE}.customer_id, 2)"}
+        }

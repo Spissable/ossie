@@ -688,3 +688,121 @@ class TestLightdashToOssie:
         # A column named like a function is not qualified when called.
         fields = {f.name: f.expression.dialects[0].expression for f in result.output.semantic_model[0].datasets[0].fields}
         assert fields["count"] == "COUNT(budgets.budget_use) OVER ()"
+
+    def test_chained_and_expression_joins_are_stashed_and_edges_derived(self):
+        schema_yml = {
+            "models": [
+                {
+                    "name": "queries",
+                    "meta": {
+                        "sql_filter": "${TABLE}.deleted = false",
+                        "group_details": {"usage": {"label": "Usage"}},
+                        "joins": [
+                            {"join": "projects", "sql_on": "${queries.project_id} = ${projects.project_id}"},
+                            {
+                                "join": "organizations",
+                                "sql_on": "${projects.organization_id} = ${organizations.organization_id}",
+                            },
+                            {
+                                "join": "users",
+                                "sql_on": "LOWER(${queries.user_email}) = ${users.email}",
+                            },
+                            {
+                                "join": "warehouses",
+                                "sql_on": "${queries.warehouse_id} = ${warehouses.id} AND ${warehouses.active}",
+                            },
+                        ],
+                    },
+                    "columns": [{"name": "project_id"}],
+                },
+                {
+                    "name": "projects",
+                    "meta": {
+                        "joins": [
+                            {
+                                "join": "organizations",
+                                "sql_on": "${projects.organization_id} = ${organizations.organization_id}",
+                                "relationship": "many-to-one",
+                            }
+                        ]
+                    },
+                    "columns": [{"name": "project_id"}, {"name": "organization_id"}],
+                },
+                {"name": "organizations", "columns": [{"name": "organization_id"}]},
+                {"name": "users", "columns": [{"name": "email"}]},
+                {"name": "warehouses", "columns": [{"name": "id"}, {"name": "active"}]},
+            ]
+        }
+        result = LightdashToOssieConverter().convert(schema_yml, schema="marts")
+        semantic_model = result.output.semantic_model[0]
+        edges = [(r.from_dataset, r.to, r.from_columns, r.to_columns) for r in semantic_model.relationships]
+        # The chained edge projects -> organizations is declared on projects
+        # too; the declared one wins and carries its extras.
+        assert edges == [
+            ("queries", "projects", ["project_id"], ["project_id"]),
+            ("queries", "warehouses", ["warehouse_id"], ["id"]),
+            ("projects", "organizations", ["organization_id"], ["organization_id"]),
+        ]
+        assert _raw_lightdash_data(semantic_model.relationships[2]) == {"relationship": "many-to-one"}
+        stash = _raw_lightdash_data(semantic_model.datasets[0])
+        assert stash["sql_filter"] == "${TABLE}.deleted = false"
+        assert stash["group_details"] == {"usage": {"label": "Usage"}}
+        assert [join["join"] for join in stash["joins"]] == ["organizations", "users", "warehouses"]
+        assert {
+            (issue.issue_type.value, issue.element_name)
+            for issue in result.issues
+            if issue.issue_type in (ConverterIssueType.JOIN_STASHED, ConverterIssueType.JOIN_SQL_UNPARSED)
+        } == {
+            ("JOIN_STASHED", "queries -> organizations"),
+            ("JOIN_SQL_UNPARSED", "queries -> users"),
+            ("JOIN_STASHED", "queries -> warehouses"),
+        }
+
+    def test_chained_join_without_a_declared_edge_derives_one(self):
+        schema_yml = {
+            "models": [
+                {
+                    "name": "users",
+                    "meta": {
+                        "joins": [
+                            {"join": "roles", "sql_on": "${users.id} = ${roles.user_id}"},
+                            {"join": "projects", "sql_on": "${roles.project_id} = ${projects.id}"},
+                        ]
+                    },
+                    "columns": [{"name": "id"}],
+                },
+                {"name": "roles", "columns": [{"name": "user_id"}, {"name": "project_id"}]},
+                {"name": "projects", "columns": [{"name": "id"}]},
+            ]
+        }
+        result = LightdashToOssieConverter().convert(schema_yml, schema="marts")
+        edges = [(r.from_dataset, r.to) for r in result.output.semantic_model[0].relationships]
+        assert edges == [("users", "roles"), ("roles", "projects")]
+
+    def test_column_meta_outside_dimension_is_stashed(self):
+        schema_yml = {
+            "models": [
+                {
+                    "name": "orders",
+                    "columns": [
+                        {
+                            "name": "amount",
+                            "meta": {
+                                "dimension": {"type": "number"},
+                                "additional_dimensions": {"amount_bucket": {"type": "string", "sql": "CASE WHEN ${TABLE}.amount > 100 THEN 'big' ELSE 'small' END"}},
+                            },
+                        }
+                    ],
+                }
+            ]
+        }
+        result = LightdashToOssieConverter().convert(schema_yml, schema="marts")
+        field = result.output.semantic_model[0].datasets[0].fields[0]
+        assert _lightdash_data(field) == {
+            "type": "number",
+            "column_meta": {
+                "additional_dimensions": {
+                    "amount_bucket": {"type": "string", "sql": "CASE WHEN ${TABLE}.amount > 100 THEN 'big' ELSE 'small' END"}
+                }
+            },
+        }

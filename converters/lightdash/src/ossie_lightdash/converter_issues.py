@@ -24,8 +24,13 @@ class ConverterIssueType(Enum):
 
     # Import: the dataset source could not be qualified with a schema/database.
     SOURCE_UNQUALIFIED = "SOURCE_UNQUALIFIED"
-    # Import: a join's sql_on could not be parsed into column pairs.
+    # Import: a join's sql_on yields no column pairs (expression join); it is
+    # stashed on the dataset for Lightdash but has no relationship.
     JOIN_SQL_UNPARSED = "JOIN_SQL_UNPARSED"
+    # Import: a join Ossie relationships cannot reproduce exactly (chained
+    # through another joined model, extra conditions) is stashed verbatim on
+    # the dataset; any column pairs it contains still become relationships.
+    JOIN_STASHED = "JOIN_STASHED"
     # Export: a metric references more than one dataset, which a Lightdash
     # model metric cannot express.
     CROSS_DATASET_METRIC_DROPPED = "CROSS_DATASET_METRIC_DROPPED"
