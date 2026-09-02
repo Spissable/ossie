@@ -806,3 +806,26 @@ class TestLightdashToOssie:
                 }
             },
         }
+
+    def test_every_column_is_a_dimension_unless_hidden(self):
+        schema_yml = {
+            "models": [
+                {
+                    "name": "orders",
+                    "columns": [
+                        {"name": "plain"},
+                        {"name": "shown", "meta": {"dimension": {"hidden": False, "type": "string"}}},
+                        {"name": "hidden_key", "meta": {"dimension": {"hidden": True, "type": "number", "label": "Key"}}},
+                    ],
+                }
+            ]
+        }
+        result = LightdashToOssieConverter().convert(schema_yml, schema="marts")
+        fields = {f.name: f for f in result.output.semantic_model[0].datasets[0].fields}
+        assert fields["plain"].dimension is not None
+        assert fields["shown"].dimension is not None
+        assert _lightdash_data(fields["shown"]) == {"type": "string"}
+        assert fields["hidden_key"].dimension is None
+        assert fields["hidden_key"].datatype is OssieDataType.DECIMAL
+        assert fields["hidden_key"].label == "Key"
+        assert _lightdash_data(fields["hidden_key"]) == {"type": "number"}

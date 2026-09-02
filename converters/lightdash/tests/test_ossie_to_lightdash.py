@@ -156,15 +156,16 @@ class TestOssieToLightdash:
         column = _column(_model(result.output, "orders"), "order_date")
         assert column["meta"]["dimension"] == {"label": "Order date", "type": "date"}
 
-    def test_categorical_dimension_keeps_dimension_marker(self):
+    def test_dimension_with_nothing_to_say_needs_no_meta(self):
+        # Every Lightdash column is a dimension by default.
         result = OssieToLightdashConverter().convert(_document())
         column = _column(_model(result.output, "orders"), "status")
-        assert column["meta"]["dimension"] == {}
+        assert "meta" not in column
 
-    def test_plain_field_has_no_dimension_meta(self):
+    def test_measure_only_field_becomes_a_hidden_dimension(self):
         result = OssieToLightdashConverter().convert(_document())
         column = _column(_model(result.output, "orders"), "amount")
-        assert "dimension" not in column.get("meta", {})
+        assert column["meta"]["dimension"] == {"hidden": True}
 
     def test_simple_aggregation_becomes_column_metric(self):
         result = OssieToLightdashConverter().convert(_document())
@@ -489,22 +490,23 @@ class TestOssieToLightdash:
         tampered = document.model_copy(deep=True)
         orders = tampered.semantic_model[0].datasets[0]
         orders.fields[1] = orders.fields[1].model_copy(update={"ai_context": "Order lifecycle stage."})
-        # A measure-only field cannot carry the hint without becoming a dimension.
-        orders.fields[2] = orders.fields[2].model_copy(update={"ai_context": "Gross amount."})
+        orders.fields[2] = orders.fields[2].model_copy(
+            update={"ai_context": "Gross amount.", "datatype": OssieDataType.DECIMAL}
+        )
         metrics = tampered.semantic_model[0].metrics
         metrics[0] = metrics[0].model_copy(update={"ai_context": "Revenue before refunds."})
         result = OssieToLightdashConverter().convert(tampered)
         model = _model(result.output, "orders")
         assert _column(model, "status")["meta"]["dimension"]["ai_hint"] == "Order lifecycle stage."
-        assert "dimension" not in _column(model, "amount")["meta"]
+        # A hidden dimension keeps its hint and its type.
+        assert _column(model, "amount")["meta"]["dimension"] == {
+            "hidden": True,
+            "ai_hint": "Gross amount.",
+            "type": "number",
+        }
         assert _column(model, "amount")["meta"]["metrics"]["total_amount"]["ai_hint"] == (
             "Revenue before refunds."
         )
-        assert [
-            issue.element_name
-            for issue in result.issues
-            if issue.issue_type is ConverterIssueType.FIELD_ATTRIBUTE_NOT_REPRESENTABLE
-        ] == ["amount"]
 
     def test_time_axis_withdrawn_becomes_time_intervals_off(self):
         document = _document()

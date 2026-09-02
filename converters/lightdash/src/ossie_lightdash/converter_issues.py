@@ -65,10 +65,6 @@ class ConverterIssueType(Enum):
     # Export: a field expression references a dataset the field's dataset does
     # not join, so Lightdash cannot resolve the reference.
     FIELD_REFERENCE_UNJOINED = "FIELD_REFERENCE_UNJOINED"
-    # Export: a label or AI context on a measure-only field has no Lightdash
-    # home (column meta exists only for dimensions) and is dropped rather than
-    # turning the field into a dimension.
-    FIELD_ATTRIBUTE_NOT_REPRESENTABLE = "FIELD_ATTRIBUTE_NOT_REPRESENTABLE"
     # Import: two metrics still share a name after qualification with their
     # model name; the later one is suffixed.
     METRIC_NAME_COLLISION = "METRIC_NAME_COLLISION"

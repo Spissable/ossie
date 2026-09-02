@@ -61,7 +61,7 @@ LIGHTDASH_VENDOR_NAME = "lightdash"
 # from overriding the Ossie-derived definition. ``type`` stays overridable on
 # metrics whose expression is not a recognised aggregation: it is the channel
 # for types an expression cannot express (``boolean``, ``string``, ...).
-_PROTECTED_DIMENSION_KEYS = {"sql", "label", "ai_hint", "column_meta"}
+_PROTECTED_DIMENSION_KEYS = {"sql", "label", "ai_hint", "hidden", "column_meta"}
 _PROTECTED_METRIC_KEYS = {"sql", "description", "ai_hint", "name", "model"}
 _PROTECTED_AGGREGATION_KEYS = _PROTECTED_METRIC_KEYS | {"type", "percentile"}
 _PROTECTED_JOIN_KEYS = {"join", "sql_on", "alias"}
@@ -325,31 +325,22 @@ class OssieToLightdashConverter:
                 column["description"] = field.description
 
             dimension: Dict[str, Any] = {}
+            if field.dimension is None:
+                # Every Lightdash column is a dimension; a measure-only Ossie
+                # field is a hidden one.
+                dimension["hidden"] = True
+            if field.label:
+                dimension["label"] = field.label
             ai_hint = _ai_hint(field.ai_context)
-            if field.dimension is None and (field.label or ai_hint is not None):
-                # Lightdash keeps labels and AI hints on dimensions only;
-                # writing them would turn a measure-only field into one.
-                issues.append(
-                    ConverterIssue(
-                        issue_type=ConverterIssueType.FIELD_ATTRIBUTE_NOT_REPRESENTABLE,
-                        element_name=field.name,
-                    )
-                )
-            elif field.dimension is not None:
-                if field.label:
-                    dimension["label"] = field.label
-                if ai_hint is not None:
-                    dimension["ai_hint"] = ai_hint
-            if field.dimension is not None:
-                # Only dimension fields carry a Lightdash type: emitting one for
-                # a measure-only field would turn it into a dimension on import.
-                lightdash_type = datatype_to_lightdash_type(field.datatype)
-                if lightdash_type is not None:
-                    dimension["type"] = lightdash_type
-                elif field.dimension.is_time:
-                    # No datatype to translate, but the field is declared as a
-                    # time axis: `date` is the closest Lightdash type.
-                    dimension["type"] = "date"
+            if ai_hint is not None:
+                dimension["ai_hint"] = ai_hint
+            lightdash_type = datatype_to_lightdash_type(field.datatype)
+            if lightdash_type is not None:
+                dimension["type"] = lightdash_type
+            elif field.dimension is not None and field.dimension.is_time:
+                # No datatype to translate, but the field is declared as a
+                # time axis: `date` is the closest Lightdash type.
+                dimension["type"] = "date"
             if (
                 field.dimension is not None
                 and field.dimension.is_time
@@ -396,10 +387,8 @@ class OssieToLightdashConverter:
                     if key not in _PROTECTED_DIMENSION_KEYS
                 }
             )
-            # An empty dict still marks dimension-ness: a field Ossie declares as a
-            # categorical dimension must not degrade to a plain column on export,
-            # or the import direction could not reconstruct it.
-            if dimension or field.dimension is not None:
+            # A dimension with nothing to say is Lightdash's default: no meta.
+            if dimension:
                 column["meta"] = {"dimension": dimension}
             column_meta = field_data.get("column_meta")
             if isinstance(column_meta, dict) and column_meta:

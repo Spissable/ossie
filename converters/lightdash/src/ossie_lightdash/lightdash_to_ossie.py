@@ -62,7 +62,7 @@ LIGHTDASH_VENDOR_NAME = "lightdash"
 # Keys that are structurally encoded in Ossie vocabulary and therefore must NOT
 # be duplicated into the extension (a stale copy would win on export).
 _STRUCTURAL_METRIC_KEYS = {"sql", "description", "ai_hint", "name", "model"}
-_STRUCTURAL_DIMENSION_KEYS = {"label", "sql", "ai_hint"}
+_STRUCTURAL_DIMENSION_KEYS = {"label", "sql", "ai_hint", "hidden"}
 _STRUCTURAL_JOIN_KEYS = {"join", "sql_on"}
 # Model meta with Ossie vocabulary; everything else is stashed on the dataset.
 _HANDLED_MODEL_KEYS = {"metrics", "joins", "primary_key", "ai_hint"}
@@ -432,11 +432,14 @@ class LightdashToOssieConverter:
         dimension_meta = column_meta.get("dimension")
 
         expression = column_name
-        dimension: Optional[OssieDimension] = None
         datatype = None
         label: Optional[str] = None
         ai_context: Optional[str] = None
         extension_data: Dict[str, Any] = {}
+        # Every dbt column is a Lightdash dimension unless it is hidden; a
+        # hidden column is the closest Lightdash comes to a measure-only field.
+        hidden = bool((dimension_meta or {}).get("hidden"))
+        dimension: Optional[OssieDimension] = None if hidden else OssieDimension()
         if dimension_meta is not None:
             label = dimension_meta.get("label")
             ai_context = _ai_context(dimension_meta.get("ai_hint"))
@@ -452,11 +455,9 @@ class LightdashToOssieConverter:
             # the datatype decides.
             excluded = set(_STRUCTURAL_DIMENSION_KEYS)
             time_intervals = dimension_meta.get("time_intervals")
-            if time_intervals is False or time_intervals == "OFF":
+            if not hidden and (time_intervals is False or time_intervals == "OFF"):
                 dimension = OssieDimension(is_time=False)
                 excluded.add("time_intervals")
-            else:
-                dimension = OssieDimension()
             extension_data = {
                 key: value
                 for key, value in dimension_meta.items()

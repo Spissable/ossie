@@ -44,8 +44,8 @@ ossie-lightdash import schema.yml semantic_model.json --database analytics_db --
 | `dataset.source` | assembled on import from `--database` / `--schema` / model name |
 | `dataset.primary_key` | model `meta.primary_key` (a single key exports as a string, a composite key as a list) |
 | `ai_context` on datasets, fields and metrics | `ai_hint` on models, dimensions and metrics; a multi-line instruction is a list of hints, and the synonyms / examples of the structured form are rendered as extra hints on export |
-| `field` (no `dimension`) | plain column entry |
-| `field` with `dimension` | `columns[].meta.dimension` (an empty `dimension: {}` marks a dimension with no extra attributes) |
+| `field` with `dimension` | a column: every dbt column is a Lightdash dimension by default, so a dimension with nothing else to say is a plain column entry with no `meta` |
+| `field` without `dimension` (measure-only) | `columns[].meta.dimension.hidden: true` — a hidden column is the closest Lightdash comes to a field that is not for grouping; it keeps its `type`, `label` and `ai_hint` |
 | `field.datatype` | `meta.dimension.type` (`String`→`string`, `Integer`/`Decimal`/`Float`→`number`, `Date`→`date`, `DateTime`/`DateTimeTz`→`timestamp`, `Boolean`→`boolean`, `Time`/`Opaque`→`string`); on import `number` maps back to `Decimal` |
 | `field.dimension.is_time` | `time_intervals: OFF` ↔ an explicit `is_time: false` on a temporal column; otherwise not carried — a non-temporal time axis (e.g. a year stored as `Integer`) has no Lightdash equivalent |
 | `field.label` / `.description` | `meta.dimension.label` / column `description` |
@@ -101,8 +101,7 @@ Every loss or approximation is reported as a `ConverterIssue`: on import
 `JOIN_TARGET_UNKNOWN`, `EXPRESSION_NOT_PORTABLE`, `METRIC_REFERENCE_INLINED`,
 `ALIAS_REFERENCE_FLATTENED`, `METRIC_NAME_COLLISION`, `SOURCE_UNQUALIFIED`,
 `METRIC_SQL_MISSING`; on export `CROSS_DATASET_METRIC_DROPPED`,
-`FIELD_REFERENCE_UNJOINED`, `FIELD_ATTRIBUTE_NOT_REPRESENTABLE`,
-`TIME_ROLE_NOT_REPRESENTABLE`, `DIALECT_UNAVAILABLE`,
+`FIELD_REFERENCE_UNJOINED`, `TIME_ROLE_NOT_REPRESENTABLE`, `DIALECT_UNAVAILABLE`,
 `RELATIONSHIP_COLUMNS_MISMATCHED`, `EXTENSION_DATA_INVALID`,
 `FOREIGN_EXTENSION_IGNORED`.
 
@@ -136,9 +135,6 @@ Every loss or approximation is reported as a `ConverterIssue`: on import
   was meant is not preserved in the expression.
 - **`unique_keys` are not exported** — Lightdash has no corresponding
   concept — and consequently cannot be reconstructed on import.
-- **A label or `ai_context` on a measure-only field is dropped on export**
-  (`FIELD_ATTRIBUTE_NOT_REPRESENTABLE`): Lightdash keeps both on dimensions
-  only, and writing them would turn the field into a dimension.
 - **`dataset.name` is not preserved when it differs from the source table
   name**: the dbt model is named after the table part of `source`, and the
   import direction derives dataset names from model names. References inside
@@ -149,8 +145,6 @@ Every loss or approximation is reported as a `ConverterIssue`: on import
 - **Datatypes round-trip by category, not by exact type**: Lightdash types are
   coarser than Ossie datatypes, so `Integer` comes back as `Decimal` and
   `DateTimeTz` as `DateTime`.
-- **A measure-only field (no `dimension`) loses its `datatype`**: Lightdash
-  carries types on dimensions only, so there is nowhere to put it.
 - **A non-temporal time axis** (`is_time: true` on an `Integer` year) is
   reported with a `TIME_ROLE_NOT_REPRESENTABLE` issue on export.
 - **Stashed meta is Lightdash-only.** Model meta without Ossie vocabulary and
