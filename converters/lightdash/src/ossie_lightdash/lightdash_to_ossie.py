@@ -14,7 +14,6 @@
 # KIND, either express or implied.  See the License for the
 # specific language governing permissions and limitations
 # under the License.
-
 """Convert Lightdash semantic definitions into an Ossie document.
 
 The input is a dbt ``schema.yml``-shaped dictionary whose ``meta`` blocks
@@ -28,7 +27,7 @@ export direction can reproduce them exactly.
 
 import json
 import re
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Set, Tuple
 
 from ossie import (
     OssieCustomExtension,
@@ -51,18 +50,19 @@ from ossie_lightdash.converter_issues import (
 )
 from ossie_lightdash.datatype_utils import lightdash_type_to_datatype
 from ossie_lightdash.expression_utils import (
+    AGGREGATE_TYPES,
     build_aggregation,
-    lightdash_sql_to_osi,
+    has_non_portable_reference,
+    lightdash_sql_to_ossie,
 )
 
 LIGHTDASH_VENDOR_NAME = "lightdash"
 
 # Keys that are structurally encoded in Ossie vocabulary and therefore must NOT
 # be duplicated into the extension (a stale copy would win on export).
-# ``type`` stays in the extension only for metric types whose semantics Ossie
-# expressions cannot express faithfully (currently ``percentile``).
 _STRUCTURAL_METRIC_KEYS = {"sql", "description"}
 _STRUCTURAL_DIMENSION_KEYS = {"label", "sql"}
+_STRUCTURAL_JOIN_KEYS = {"join", "sql_on"}
 
 _JOIN_PAIR_RE = re.compile(
     r"\$\{(\w+)\.(\w+)\}\s*=\s*\$\{(\w+)\.(\w+)\}",
@@ -77,18 +77,6 @@ def _ansi(expression: str) -> OssieExpression:
     )
 
 
-def _type_needs_extension(lightdash_type: str) -> bool:
-    """True for metric types an Ossie expression cannot encode faithfully.
-
-    ``number`` is fully described by its SQL and typed aggregations are
-    recovered by parsing the expression, so only the remaining types
-    (currently ``percentile``) must survive inside the extension.
-    """
-    if lightdash_type == "number":
-        return False
-    return build_aggregation(lightdash_type, "_", "_") is None
-
-
 def _lightdash_extension(data: Dict[str, Any]) -> List[OssieCustomExtension]:
     if not data:
         return []
@@ -98,6 +86,103 @@ def _lightdash_extension(data: Dict[str, Any]) -> List[OssieCustomExtension]:
             data=json.dumps(data, ensure_ascii=False, sort_keys=True),
         )
     ]
+
+
+def _unique_name(base: str, used: Set[str]) -> str:
+    name = base
+    suffix = 2
+    while name in used:
+        name = f"{base}_{suffix}"
+        suffix += 1
+    used.add(name)
+    return name
+
+
+class _ModelContext:
+    """Expression rewriting for one model: alias resolution, metric inlining
+    and non-portable reference detection, with the issues they raise."""
+
+    def __init__(
+        self,
+        dataset_name: str,
+        aliases: Dict[str, str],
+        definitions: Dict[str, Tuple[Dict[str, Any], Optional[str]]],
+        issues: List[ConverterIssue],
+    ) -> None:
+        self.dataset_name = dataset_name
+        self.aliases = aliases
+        self.definitions = definitions
+        self.issues = issues
+        self._expressions: Dict[str, Optional[str]] = {}
+        self._resolving: Set[str] = set()
+
+    def rewrite(self, sql: str, element_name: str) -> Optional[str]:
+        """Rewrite Lightdash SQL into an Ossie expression, or None (with an
+        issue) when it references parameters or user attributes."""
+        if has_non_portable_reference(sql):
+            self.issues.append(
+                ConverterIssue(
+                    issue_type=ConverterIssueType.EXPRESSION_NOT_PORTABLE,
+                    element_name=element_name,
+                )
+            )
+            return None
+        result = lightdash_sql_to_ossie(
+            sql,
+            self.dataset_name,
+            aliases=self.aliases,
+            resolve_metric=self.metric_expression,
+        )
+        for _ in result.inlined_metrics:
+            self.issues.append(
+                ConverterIssue(
+                    issue_type=ConverterIssueType.METRIC_REFERENCE_INLINED,
+                    element_name=element_name,
+                )
+            )
+        for _ in result.flattened_aliases:
+            self.issues.append(
+                ConverterIssue(
+                    issue_type=ConverterIssueType.ALIAS_REFERENCE_FLATTENED,
+                    element_name=element_name,
+                )
+            )
+        return result.expression
+
+    def metric_expression(self, name: str) -> Optional[str]:
+        """The Ossie expression of one of this model's metrics, or None when the
+        name is not a metric, the metric is not portable, or it references
+        itself."""
+        if name not in self.definitions:
+            return None
+        if name in self._expressions:
+            return self._expressions[name]
+        if name in self._resolving:
+            return None
+        self._resolving.add(name)
+        definition, column = self.definitions[name]
+        expression = self._build_expression(name, definition, column)
+        self._resolving.discard(name)
+        self._expressions[name] = expression
+        return expression
+
+    def _build_expression(
+        self, name: str, definition: Dict[str, Any], column: Optional[str]
+    ) -> Optional[str]:
+        sql = definition.get("sql")
+        if sql:
+            inner = self.rewrite(sql, name)
+            if inner is None:
+                return None
+        elif column is not None:
+            inner = f"{self.dataset_name}.{column}"
+        else:
+            return None
+        lightdash_type = definition.get("type", "number")
+        return (
+            build_aggregation(lightdash_type, inner, definition.get("percentile"))
+            or inner
+        )
 
 
 class LightdashToOssieConverter:
@@ -115,10 +200,15 @@ class LightdashToOssieConverter:
         datasets: List[OssieDataset] = []
         metrics: List[OssieMetric] = []
         relationships: List[OssieRelationship] = []
+        relationship_names: Set[str] = set()
 
         for model in schema_yml.get("models") or []:
             dataset, model_metrics, model_relationships = self._convert_model(
-                model, database=database, schema=schema, issues=issues
+                model,
+                database=database,
+                schema=schema,
+                issues=issues,
+                relationship_names=relationship_names,
             )
             datasets.append(dataset)
             metrics.extend(model_metrics)
@@ -144,6 +234,7 @@ class LightdashToOssieConverter:
         database: Optional[str],
         schema: Optional[str],
         issues: List[ConverterIssue],
+        relationship_names: Set[str],
     ) -> Tuple[OssieDataset, List[OssieMetric], List[OssieRelationship]]:
         name = model["name"]
         source = ".".join(part for part in [database, schema, name] if part)
@@ -155,29 +246,43 @@ class LightdashToOssieConverter:
                 )
             )
 
-        fields: List[OssieField] = []
-        metrics: List[OssieMetric] = []
-        for column in model.get("columns") or []:
-            field, column_metrics = self._convert_column(column, dataset_name=name)
-            fields.append(field)
-            metrics.extend(column_metrics)
-
         model_meta = model.get("meta") or {}
+        joins = model_meta.get("joins") or []
+        aliases = {
+            join["alias"]: join["join"]
+            for join in joins
+            if join.get("alias") and join.get("join")
+        }
+
+        # Metric definitions are collected before any SQL is rewritten so that
+        # `${metric}` references can be inlined.
+        definitions: Dict[str, Tuple[Dict[str, Any], Optional[str]]] = {}
+        for column in model.get("columns") or []:
+            column_meta = column.get("meta") or {}
+            for metric_name, definition in (column_meta.get("metrics") or {}).items():
+                definitions[metric_name] = (definition, column["name"])
         for metric_name, definition in (model_meta.get("metrics") or {}).items():
-            if not definition.get("sql"):
-                issues.append(
-                    ConverterIssue(
-                        issue_type=ConverterIssueType.METRIC_SQL_MISSING,
-                        element_name=metric_name,
-                    )
-                )
-                continue
-            metrics.append(
-                self._convert_sql_metric(metric_name, definition, dataset_name=name)
-            )
+            definitions[metric_name] = (definition, None)
+
+        context = _ModelContext(name, aliases, definitions, issues)
+
+        fields: List[OssieField] = []
+        for column in model.get("columns") or []:
+            field = self._convert_column(column, context)
+            if field is not None:
+                fields.append(field)
+
+        metrics: List[OssieMetric] = []
+        for metric_name, (definition, column_name) in definitions.items():
+            metric = self._convert_metric(metric_name, definition, column_name, context)
+            if metric is not None:
+                metrics.append(metric)
 
         relationships = self._convert_joins(
-            model_meta.get("joins") or [], from_model=name, issues=issues
+            joins,
+            from_model=name,
+            issues=issues,
+            relationship_names=relationship_names,
         )
 
         dataset = OssieDataset(
@@ -189,11 +294,10 @@ class LightdashToOssieConverter:
         return dataset, metrics, relationships
 
     def _convert_column(
-        self, column: Dict[str, Any], *, dataset_name: str
-    ) -> Tuple[OssieField, List[OssieMetric]]:
+        self, column: Dict[str, Any], context: _ModelContext
+    ) -> Optional[OssieField]:
         column_name = column["name"]
-        meta = column.get("meta") or {}
-        dimension_meta = meta.get("dimension")
+        dimension_meta = (column.get("meta") or {}).get("dimension")
 
         expression = column_name
         dimension: Optional[OssieDimension] = None
@@ -203,7 +307,10 @@ class LightdashToOssieConverter:
         if dimension_meta is not None:
             label = dimension_meta.get("label")
             if dimension_meta.get("sql"):
-                expression = lightdash_sql_to_osi(dimension_meta["sql"], dataset_name)
+                rewritten = context.rewrite(dimension_meta["sql"], column_name)
+                if rewritten is None:
+                    return None
+                expression = rewritten
             datatype = lightdash_type_to_datatype(dimension_meta.get("type"))
             # `is_time` is a role marker in Ossie, not a type: Lightdash has no
             # equivalent, so it is left unset rather than inferred from the type
@@ -215,7 +322,7 @@ class LightdashToOssieConverter:
                 if key not in _STRUCTURAL_DIMENSION_KEYS
             }
 
-        field = OssieField(
+        return OssieField(
             name=column_name,
             expression=_ansi(expression),
             dimension=dimension,
@@ -225,60 +332,34 @@ class LightdashToOssieConverter:
             custom_extensions=_lightdash_extension(extension_data) or None,
         )
 
-        metrics = [
-            self._convert_column_metric(
-                metric_name, definition, dataset_name=dataset_name, column=column_name
-            )
-            for metric_name, definition in (meta.get("metrics") or {}).items()
-        ]
-        return field, metrics
-
-    def _convert_column_metric(
-        self,
-        metric_name: str,
-        definition: Dict[str, Any],
-        *,
-        dataset_name: str,
-        column: str,
-    ) -> OssieMetric:
-        lightdash_type = definition.get("type", "number")
-        expression = build_aggregation(lightdash_type, dataset_name, column)
-        if expression is None:
-            sql = definition.get("sql")
-            if sql:
-                expression = lightdash_sql_to_osi(sql, dataset_name)
-            else:
-                expression = f"{dataset_name}.{column}"
-
-        return self._build_metric(
-            metric_name,
-            definition,
-            expression=expression,
-            keep_type_in_extension=_type_needs_extension(lightdash_type),
-        )
-
-    def _convert_sql_metric(
-        self, metric_name: str, definition: Dict[str, Any], *, dataset_name: str
-    ) -> OssieMetric:
-        expression = lightdash_sql_to_osi(definition["sql"], dataset_name)
-        return self._build_metric(
-            metric_name,
-            definition,
-            expression=expression,
-            keep_type_in_extension=_type_needs_extension(definition.get("type", "number")),
-        )
-
     @staticmethod
-    def _build_metric(
+    def _convert_metric(
         metric_name: str,
         definition: Dict[str, Any],
-        *,
-        expression: str,
-        keep_type_in_extension: bool,
-    ) -> OssieMetric:
+        column: Optional[str],
+        context: _ModelContext,
+    ) -> Optional[OssieMetric]:
+        if column is None and not definition.get("sql"):
+            context.issues.append(
+                ConverterIssue(
+                    issue_type=ConverterIssueType.METRIC_SQL_MISSING,
+                    element_name=metric_name,
+                )
+            )
+            return None
+        expression = context.metric_expression(metric_name)
+        if expression is None:
+            return None
+
+        # Typed aggregations (and their percentile) are recovered from the
+        # expression on export; only types an expression cannot encode
+        # (`boolean`, `string`, `date`, ...) travel in the extension.
+        lightdash_type = definition.get("type", "number")
         excluded = set(_STRUCTURAL_METRIC_KEYS)
-        if not keep_type_in_extension:
+        if lightdash_type == "number" or lightdash_type in AGGREGATE_TYPES:
             excluded.add("type")
+        if lightdash_type == "percentile":
+            excluded.add("percentile")
         extension_data = {
             key: value for key, value in definition.items() if key not in excluded
         }
@@ -295,18 +376,21 @@ class LightdashToOssieConverter:
         *,
         from_model: str,
         issues: List[ConverterIssue],
+        relationship_names: Set[str],
     ) -> List[OssieRelationship]:
         relationships: List[OssieRelationship] = []
         for join in joins:
             to_model = join.get("join")
+            # An aliased join is referenced by its alias in `sql_on`.
+            reference = join.get("alias") or to_model
             pairs = _JOIN_PAIR_RE.findall(join.get("sql_on") or "")
             from_columns: List[str] = []
             to_columns: List[str] = []
             for left_table, left_column, right_table, right_column in pairs:
-                if left_table == from_model and right_table == to_model:
+                if left_table == from_model and right_table == reference:
                     from_columns.append(left_column)
                     to_columns.append(right_column)
-                elif left_table == to_model and right_table == from_model:
+                elif left_table == reference and right_table == from_model:
                     from_columns.append(right_column)
                     to_columns.append(left_column)
             if not to_model or not from_columns:
@@ -317,14 +401,24 @@ class LightdashToOssieConverter:
                     )
                 )
                 continue
+            # The alias and any other join attributes (type, relationship,
+            # fields, ...) have no Ossie vocabulary and travel in the extension.
+            extras = {
+                key: value
+                for key, value in join.items()
+                if key not in _STRUCTURAL_JOIN_KEYS
+            }
             relationships.append(
                 OssieRelationship.model_validate(
                     {
-                        "name": f"{from_model}_to_{to_model}",
+                        "name": _unique_name(
+                            f"{from_model}_to_{reference}", relationship_names
+                        ),
                         "from": from_model,
                         "to": to_model,
                         "from_columns": from_columns,
                         "to_columns": to_columns,
+                        "custom_extensions": _lightdash_extension(extras) or None,
                     }
                 )
             )

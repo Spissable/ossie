@@ -14,7 +14,6 @@
 # KIND, either express or implied.  See the License for the
 # specific language governing permissions and limitations
 # under the License.
-
 from dataclasses import dataclass
 from enum import Enum
 from typing import Generic, List, TypeVar
@@ -45,6 +44,16 @@ class ConverterIssueType(Enum):
     # Export: a custom extension from another vendor cannot be carried into
     # Lightdash meta (it remains in the Ossie document itself).
     FOREIGN_EXTENSION_IGNORED = "FOREIGN_EXTENSION_IGNORED"
+    # Import: an expression references project parameters or user attributes
+    # (`${lightdash.parameters.x}`, `${ld.user.x}`), which have no Ossie form;
+    # the element is skipped.
+    EXPRESSION_NOT_PORTABLE = "EXPRESSION_NOT_PORTABLE"
+    # Import: a `${metric}` reference was replaced by that metric's expression,
+    # since Ossie metrics cannot reference each other.
+    METRIC_REFERENCE_INLINED = "METRIC_REFERENCE_INLINED"
+    # Import: a `${alias.column}` reference to an aliased join was rewritten to
+    # the joined dataset; Ossie has no join aliases, so the join path is lost.
+    ALIAS_REFERENCE_FLATTENED = "ALIAS_REFERENCE_FLATTENED"
 
 
 @dataclass(frozen=True)

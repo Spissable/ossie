@@ -48,10 +48,12 @@ ossie-lightdash import schema.yml semantic_model.json --database analytics_db --
 | `field.dimension.is_time` | *not carried* — it is a role marker (a field can be a time axis without a temporal datatype, e.g. a year stored as `Integer`) and Lightdash has no equivalent |
 | `field.label` / `.description` | `meta.dimension.label` / column `description` |
 | `field.expression` (≠ column name) | `meta.dimension.sql` (`dataset.col` ↔ `${TABLE}.col`) |
-| `metric` with single-aggregation expression (`SUM(ds.col)`, `COUNT(DISTINCT ds.col)`, ...) | column-level `meta.metrics.<name>` with a typed metric (`sum`, `count_distinct`, ...) |
+| `metric` that is one aggregation over a column (`SUM(ds.col)`, `COUNT(DISTINCT ds.col)`, `SUM(DISTINCT ds.col)`, `PERCENTILE_CONT(0.9) WITHIN GROUP (ORDER BY ds.col)`, ...) | column-level `meta.metrics.<name>` with a typed metric (`sum`, `count_distinct`, `sum_distinct`, `percentile` + `percentile: 90`, ...) |
+| `metric` that is one aggregation over any other expression (`AVG(CASE WHEN ds.status = 'done' THEN 1 ELSE 0 END)`) | model-level `meta.metrics.<name>` with the typed metric and the operand as `sql` |
 | `metric` with any other single-dataset expression | model-level `meta.metrics.<name>` with `type: number` + `sql` |
-| `relationship` | `meta.joins` (`sql_on` built from / parsed into column pairs) |
-| Lightdash presentation attributes (`label`, `format`, `round`, `compact`, `group_label`, `hidden`, `percentile`, ...) | `custom_extensions` with `vendor_name: "lightdash"`; on export the extension data is overlaid onto the generated definition (structural keys — `sql`/`label` on dimensions, `sql`/`description` on metrics — are protected and cannot be overridden) |
+| `relationship` | `meta.joins` (`sql_on` built from / parsed into column pairs); the `alias` and other join attributes (`relationship`, `type`, `fields`, ...) travel in the relationship's `lightdash` extension, and a dataset joined more than once from the same model is aliased on export |
+| `${TABLE}.col`, `${col}`, `${other_model.col}` in Lightdash SQL | `dataset.col` / `other_model.col`; `${alias.col}` is flattened onto the aliased model, `${metric}` is replaced by that metric's expression |
+| Lightdash presentation attributes (`label`, `format`, `round`, `compact`, `group_label`, `hidden`, ...) | `custom_extensions` with `vendor_name: "lightdash"`; on export the extension data is overlaid onto the generated definition (structural keys — `sql`/`label` on dimensions, `sql`/`description` on metrics and `type`/`percentile` on metrics whose expression is a recognised aggregation, `join`/`sql_on` on joins — are protected and cannot be overridden) |
 
 Expressions are written under the `ANSI_SQL` dialect. Warehouse-specific
 dialects (e.g. `BIGQUERY`) can be added once the surrounding tooling resolves
@@ -71,9 +73,16 @@ Omitting `--schema` as well is reported as a `SOURCE_UNQUALIFIED` issue.
 - **Cross-dataset metrics are dropped on export** (with a
   `CROSS_DATASET_METRIC_DROPPED` issue): a Lightdash model metric cannot
   reference other tables.
-- **Percentile metrics** keep `type` / `percentile` in the `lightdash`
-  extension (Ossie expressions cannot express them faithfully) and re-export
-  as model-level metrics.
+- **Parameter and user-attribute references** (`${lightdash.parameters.x}`,
+  `${ld.user.email}`) have no Ossie form: a dimension or metric whose SQL uses
+  them is skipped on import with an `EXPRESSION_NOT_PORTABLE` issue.
+- **Metric-to-metric references** (`${other_metric}`) are inlined on import
+  (`METRIC_REFERENCE_INLINED`), since Ossie metrics cannot reference each
+  other; the export direction does not reconstruct the reference.
+- **References through a join alias** (`${sold_date.year}`) are rewritten to
+  the joined dataset (`date_dim.year`) with an `ALIAS_REFERENCE_FLATTENED`
+  issue: Ossie has no aliases, so which of several joins to the same dataset
+  was meant is not preserved in the expression.
 - **`primary_key` / `unique_keys` are not exported** — Lightdash has no
   corresponding concept — and consequently cannot be reconstructed on import.
 - **`dataset.name` is not preserved when it differs from the source table

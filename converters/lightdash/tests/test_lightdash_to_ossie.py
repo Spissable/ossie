@@ -156,10 +156,14 @@ class TestLightdashToOssie:
             == "COUNT(DISTINCT orders.customer_id)"
         )
 
-    def test_percentile_metric_keeps_type_in_extension(self):
+    def test_percentile_metric_becomes_percentile_cont(self):
         result = LightdashToOssieConverter().convert(SCHEMA_YML, schema="marts")
         metric = _metric(result.output, "p90_amount")
-        assert _lightdash_data(metric) == {"type": "percentile", "percentile": 90}
+        assert (
+            metric.expression.dialects[0].expression
+            == "PERCENTILE_CONT(0.9) WITHIN GROUP (ORDER BY orders.amount)"
+        )
+        assert _lightdash_data(metric) == {}
 
     def test_sql_metric_expression_is_rewritten(self):
         result = LightdashToOssieConverter().convert(SCHEMA_YML, schema="marts")
@@ -182,7 +186,7 @@ class TestLightdashToOssie:
         assert relationship.from_columns == ["customer_id"]
         assert relationship.to_columns == ["customer_id"]
 
-    def test_percentile_with_sql_keeps_type_in_extension(self):
+    def test_percentile_with_sql_orders_by_the_expression(self):
         schema_yml = {
             "models": [
                 {
@@ -204,9 +208,9 @@ class TestLightdashToOssie:
         metric = _metric(result.output, "p90_custom")
         assert (
             metric.expression.dialects[0].expression
-            == "orders.amount - orders.discount"
+            == "PERCENTILE_CONT(0.9) WITHIN GROUP (ORDER BY orders.amount - orders.discount)"
         )
-        assert _lightdash_data(metric) == {"type": "percentile", "percentile": 90}
+        assert _lightdash_data(metric) == {}
 
     def test_joined_table_references_become_cross_dataset(self):
         schema_yml = {
@@ -266,5 +270,197 @@ class TestLightdashToOssie:
         assert result.output.semantic_model[0].relationships is None
         assert any(
             issue.issue_type is ConverterIssueType.JOIN_SQL_UNPARSED
+            for issue in result.issues
+        )
+
+    def test_typed_metric_with_sql_aggregates_the_expression(self):
+        schema_yml = {
+            "models": [
+                {
+                    "name": "work_orders",
+                    "columns": [
+                        {
+                            "name": "status",
+                            "meta": {
+                                "metrics": {
+                                    "completion_rate": {
+                                        "type": "average",
+                                        "sql": "CASE WHEN ${status} = 'Completed' THEN 1 ELSE 0 END",
+                                    },
+                                    "distinct_total": {"type": "sum_distinct"},
+                                }
+                            },
+                        }
+                    ],
+                }
+            ]
+        }
+        result = LightdashToOssieConverter().convert(schema_yml, schema="marts")
+        assert (
+            _metric(result.output, "completion_rate").expression.dialects[0].expression
+            == "AVG(CASE WHEN work_orders.status = 'Completed' THEN 1 ELSE 0 END)"
+        )
+        distinct_total = _metric(result.output, "distinct_total")
+        assert (
+            distinct_total.expression.dialects[0].expression
+            == "SUM(DISTINCT work_orders.status)"
+        )
+        assert _lightdash_data(distinct_total) == {}
+
+    def test_metric_reference_is_inlined(self):
+        schema_yml = {
+            "models": [
+                {
+                    "name": "orders",
+                    "meta": {
+                        "metrics": {
+                            "amount_per_customer": {
+                                "type": "number",
+                                "sql": "${total_amount} / NULLIF(${unique_customers}, 0)",
+                            }
+                        }
+                    },
+                    "columns": [
+                        {"name": "amount", "meta": {"metrics": {"total_amount": {"type": "sum"}}}},
+                        {
+                            "name": "customer_id",
+                            "meta": {"metrics": {"unique_customers": {"type": "count_distinct"}}},
+                        },
+                    ],
+                }
+            ]
+        }
+        result = LightdashToOssieConverter().convert(schema_yml, schema="marts")
+        assert (
+            _metric(result.output, "amount_per_customer").expression.dialects[0].expression
+            == "(SUM(orders.amount)) / NULLIF((COUNT(DISTINCT orders.customer_id)), 0)"
+        )
+        assert [
+            issue.element_name
+            for issue in result.issues
+            if issue.issue_type is ConverterIssueType.METRIC_REFERENCE_INLINED
+        ] == ["amount_per_customer", "amount_per_customer"]
+
+    def test_bare_field_references_resolve_to_the_dataset(self):
+        schema_yml = {
+            "models": [
+                {
+                    "name": "customers",
+                    "columns": [
+                        {"name": "first_name", "meta": {"dimension": {"type": "string"}}},
+                        {
+                            "name": "full_name",
+                            "meta": {
+                                "dimension": {
+                                    "type": "string",
+                                    "sql": "${first_name} || ' ' || ${TABLE}.last_name",
+                                }
+                            },
+                        },
+                        {
+                            "name": "order_count",
+                            "meta": {
+                                "dimension": {
+                                    "type": "number",
+                                    "sql": "(SELECT COUNT(*) FROM orders WHERE orders.customer_id = ${TABLE}.customer_id)",
+                                }
+                            },
+                        },
+                    ],
+                }
+            ]
+        }
+        result = LightdashToOssieConverter().convert(schema_yml, schema="marts")
+        by_name = {
+            field.name: field.expression.dialects[0].expression
+            for field in result.output.semantic_model[0].datasets[0].fields
+        }
+        assert by_name["full_name"] == "customers.first_name || ' ' || customers.last_name"
+        assert by_name["order_count"] == (
+            "(SELECT COUNT(*) FROM orders WHERE orders.customer_id = customers.customer_id)"
+        )
+
+    def test_parameter_references_skip_the_element(self):
+        schema_yml = {
+            "models": [
+                {
+                    "name": "orders",
+                    "meta": {
+                        "metrics": {
+                            "my_orders": {
+                                "type": "number",
+                                "sql": "SUM(CASE WHEN ${TABLE}.owner = ${ld.user.email} THEN 1 END)",
+                            }
+                        }
+                    },
+                    "columns": [
+                        {
+                            "name": "is_recent",
+                            "meta": {
+                                "dimension": {
+                                    "type": "boolean",
+                                    "sql": "${TABLE}.order_date >= ${lightdash.parameters.start_date}",
+                                }
+                            },
+                        },
+                        {"name": "order_date", "meta": {"dimension": {"type": "date"}}},
+                    ],
+                }
+            ]
+        }
+        result = LightdashToOssieConverter().convert(schema_yml, schema="marts")
+        dataset = result.output.semantic_model[0].datasets[0]
+        assert [field.name for field in dataset.fields] == ["order_date"]
+        assert result.output.semantic_model[0].metrics is None
+        assert sorted(
+            issue.element_name
+            for issue in result.issues
+            if issue.issue_type is ConverterIssueType.EXPRESSION_NOT_PORTABLE
+        ) == ["is_recent", "my_orders"]
+
+    def test_aliased_joins_become_relationships(self):
+        schema_yml = {
+            "models": [
+                {
+                    "name": "orders",
+                    "meta": {
+                        "joins": [
+                            {
+                                "join": "date_dim",
+                                "alias": "sold_date",
+                                "sql_on": "${orders.sold_date_id} = ${sold_date.date_id}",
+                                "relationship": "many-to-one",
+                            },
+                            {
+                                "join": "date_dim",
+                                "alias": "return_date",
+                                "sql_on": "${orders.return_date_id} = ${return_date.date_id}",
+                            },
+                        ]
+                    },
+                    "columns": [
+                        {
+                            "name": "sold_year",
+                            "meta": {"dimension": {"type": "number", "sql": "${sold_date.year}"}},
+                        }
+                    ],
+                }
+            ]
+        }
+        result = LightdashToOssieConverter().convert(schema_yml, schema="marts")
+        relationships = result.output.semantic_model[0].relationships
+        assert [(r.name, r.to, r.from_columns, r.to_columns) for r in relationships] == [
+            ("orders_to_sold_date", "date_dim", ["sold_date_id"], ["date_id"]),
+            ("orders_to_return_date", "date_dim", ["return_date_id"], ["date_id"]),
+        ]
+        assert _lightdash_data(relationships[0]) == {
+            "alias": "sold_date",
+            "relationship": "many-to-one",
+        }
+        field = result.output.semantic_model[0].datasets[0].fields[0]
+        assert field.expression.dialects[0].expression == "date_dim.year"
+        assert any(
+            issue.issue_type is ConverterIssueType.ALIAS_REFERENCE_FLATTENED
+            and issue.element_name == "sold_year"
             for issue in result.issues
         )

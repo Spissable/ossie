@@ -93,6 +93,18 @@ def _document() -> OssieDocument:
             ],
         ),
         OssieMetric(
+            name="p90_amount",
+            expression=_ansi("PERCENTILE_CONT(0.9) WITHIN GROUP (ORDER BY orders.amount)"),
+        ),
+        OssieMetric(
+            name="distinct_amount",
+            expression=_ansi("SUM(DISTINCT orders.amount)"),
+        ),
+        OssieMetric(
+            name="completed_rate",
+            expression=_ansi("AVG(CASE WHEN orders.status = 'completed' THEN 1 ELSE 0 END)"),
+        ),
+        OssieMetric(
             name="cross_dataset",
             expression=_ansi("SUM(orders.amount) / COUNT(customers.customer_id)"),
         ),
@@ -258,5 +270,79 @@ class TestOssieToLightdash:
             {
                 "join": "customers",
                 "sql_on": "${orders.customer_id} = ${customers.customer_id}",
+            }
+        ]
+
+    def test_percentile_cont_becomes_percentile_metric(self):
+        result = OssieToLightdashConverter().convert(_document())
+        column = _column(_model(result.output, "orders"), "amount")
+        assert column["meta"]["metrics"]["p90_amount"] == {
+            "type": "percentile",
+            "percentile": 90,
+        }
+        assert column["meta"]["metrics"]["distinct_amount"] == {"type": "sum_distinct"}
+
+    def test_aggregation_over_expression_becomes_typed_model_metric(self):
+        result = OssieToLightdashConverter().convert(_document())
+        metric = _model(result.output, "orders")["meta"]["metrics"]["completed_rate"]
+        assert metric == {
+            "type": "average",
+            "sql": "CASE WHEN ${TABLE}.status = 'completed' THEN 1 ELSE 0 END",
+        }
+
+    def test_repeated_relationship_gets_an_alias(self):
+        document = _document()
+        tampered = document.model_copy(deep=True)
+        tampered.semantic_model[0].relationships.append(
+            OssieRelationship.model_validate(
+                {
+                    "name": "orders_to_referrer",
+                    "from": "orders",
+                    "to": "customers",
+                    "from_columns": ["amount"],
+                    "to_columns": ["customer_id"],
+                }
+            )
+        )
+        result = OssieToLightdashConverter().convert(tampered)
+        assert _model(result.output, "orders")["meta"]["joins"] == [
+            {
+                "join": "customers",
+                "sql_on": "${orders.customer_id} = ${customers.customer_id}",
+            },
+            {
+                "join": "customers",
+                "alias": "orders_to_referrer",
+                "sql_on": "${orders.amount} = ${orders_to_referrer.customer_id}",
+            },
+        ]
+
+    def test_join_alias_and_attributes_restore_from_extension(self):
+        document = _document()
+        tampered = document.model_copy(deep=True)
+        tampered.semantic_model[0].relationships[0] = OssieRelationship.model_validate(
+            {
+                "name": "orders_to_customers",
+                "from": "orders",
+                "to": "customers",
+                "from_columns": ["customer_id"],
+                "to_columns": ["customer_id"],
+                "custom_extensions": [
+                    {
+                        "vendor_name": "lightdash",
+                        "data": json.dumps(
+                            {"alias": "buyer", "relationship": "many-to-one", "sql_on": "1 = 1"}
+                        ),
+                    }
+                ],
+            }
+        )
+        result = OssieToLightdashConverter().convert(tampered)
+        assert _model(result.output, "orders")["meta"]["joins"] == [
+            {
+                "join": "customers",
+                "alias": "buyer",
+                "sql_on": "${orders.customer_id} = ${buyer.customer_id}",
+                "relationship": "many-to-one",
             }
         ]

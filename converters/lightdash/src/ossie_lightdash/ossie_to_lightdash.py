@@ -14,7 +14,6 @@
 # KIND, either express or implied.  See the License for the
 # specific language governing permissions and limitations
 # under the License.
-
 """Convert an Ossie document into Lightdash semantic definitions.
 
 The output is a dbt ``schema.yml``-shaped dictionary whose ``meta`` blocks
@@ -23,12 +22,13 @@ project that Lightdash reads. Lightdash-specific presentation attributes that
 have no Ossie vocabulary round-trip through ``custom_extensions`` entries with
 ``vendor_name: "lightdash"``; their keys are overlaid onto the generated
 definitions and win for presentation attributes, while structural keys
-(``sql``/``label`` on dimensions, ``sql``/``description`` on metrics) are
-protected so they can never override the Ossie-derived definition.
+(``sql``/``label`` on dimensions, ``sql``/``description`` on metrics,
+``join``/``sql_on`` on joins) are protected so they can never override the
+Ossie-derived definition.
 """
 
 import json
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Set, Tuple
 
 from ossie import OssieDataset, OssieDialect, OssieDocument, OssieMetric, OssieSemanticModel
 
@@ -39,8 +39,9 @@ from ossie_lightdash.converter_issues import (
 )
 from ossie_lightdash.datatype_utils import datatype_to_lightdash_type, is_temporal
 from ossie_lightdash.expression_utils import (
-    osi_sql_to_lightdash,
-    parse_simple_aggregation,
+    is_column_reference,
+    ossie_sql_to_lightdash,
+    parse_aggregation,
     qualifier_of,
     referenced_datasets,
     strip_qualifier,
@@ -51,18 +52,20 @@ LIGHTDASH_VENDOR_NAME = "lightdash"
 # Structural keys are owned by Ossie vocabulary (the import direction never puts
 # them into the extension); dropping them here keeps a hand-authored extension
 # from overriding the Ossie-derived definition. ``type`` stays overridable on
-# metrics: it is the documented channel for types Ossie expressions cannot
-# express (e.g. percentile).
+# metrics whose expression is not a recognised aggregation: it is the channel
+# for types an expression cannot express (``boolean``, ``string``, ...).
 _PROTECTED_DIMENSION_KEYS = {"sql", "label"}
 _PROTECTED_METRIC_KEYS = {"sql", "description"}
+_PROTECTED_AGGREGATION_KEYS = _PROTECTED_METRIC_KEYS | {"type", "percentile"}
+_PROTECTED_JOIN_KEYS = {"join", "sql_on", "alias"}
 
 
-def _pick_expression(osi_expression: Any, dialect: OssieDialect) -> str:
+def _pick_expression(ossie_expression: Any, dialect: OssieDialect) -> str:
     """Return the expression for the preferred dialect (fallback: first available)."""
-    for dialect_expression in osi_expression.dialects:
+    for dialect_expression in ossie_expression.dialects:
         if dialect_expression.dialect is dialect:
             return dialect_expression.expression
-    return osi_expression.dialects[0].expression if osi_expression.dialects else ""
+    return ossie_expression.dialects[0].expression if ossie_expression.dialects else ""
 
 
 def _lightdash_extension_data(element: Any, issues: List[ConverterIssue]) -> Dict[str, Any]:
@@ -132,6 +135,7 @@ class OssieToLightdashConverter:
                 issues,
             )
 
+        joined_pairs: Set[Tuple[str, str]] = set()
         for relationship in semantic_model.relationships or []:
             from_model = models_by_dataset.get(relationship.from_dataset)
             to_model_name = model_name_by_dataset.get(relationship.to)
@@ -146,14 +150,35 @@ class OssieToLightdashConverter:
                     )
                 )
                 continue
+            extension_data = _lightdash_extension_data(relationship, issues)
+            # Lightdash refuses to join the same table twice without an alias;
+            # a stashed alias is restored, otherwise the relationship name
+            # aliases every repeat of a dataset pair.
+            pair = (relationship.from_dataset, relationship.to)
+            alias = extension_data.get("alias")
+            if alias is None and pair in joined_pairs:
+                alias = relationship.name
+            joined_pairs.add(pair)
+            join_reference = alias or to_model_name
             sql_on = " AND ".join(
-                f"${{{from_model_name}.{from_column}}} = ${{{to_model_name}.{to_column}}}"
+                f"${{{from_model_name}.{from_column}}} = ${{{join_reference}.{to_column}}}"
                 for from_column, to_column in zip(
                     relationship.from_columns, relationship.to_columns
                 )
             )
+            join: Dict[str, Any] = {"join": to_model_name}
+            if alias:
+                join["alias"] = alias
+            join["sql_on"] = sql_on
+            join.update(
+                {
+                    key: value
+                    for key, value in extension_data.items()
+                    if key not in _PROTECTED_JOIN_KEYS
+                }
+            )
             joins = from_model.setdefault("meta", {}).setdefault("joins", [])
-            joins.append({"join": to_model_name, "sql_on": sql_on})
+            joins.append(join)
 
         return [models_by_dataset[dataset.name] for dataset in datasets]
 
@@ -195,7 +220,7 @@ class OssieToLightdashConverter:
                 )
             expression = _pick_expression(field.expression, self._dialect)
             if expression and expression != field.name:
-                dimension["sql"] = osi_sql_to_lightdash(expression, dataset.name)
+                dimension["sql"] = ossie_sql_to_lightdash(expression, dataset.name)
             dimension.update(
                 {
                     key: value
@@ -241,32 +266,41 @@ class OssieToLightdashConverter:
         if metric.description:
             definition["description"] = metric.description
 
+        # A single aggregation becomes a typed metric: on the column when the
+        # operand is one of the dataset's columns, otherwise on the model with
+        # the operand as `sql`. Anything else is a `number` metric with raw SQL.
         target_column: Optional[str] = None
-        parsed = parse_simple_aggregation(expression)
+        parsed = parse_aggregation(expression)
         if parsed is not None:
-            lightdash_type, column_ref = parsed
-            qualifier = qualifier_of(column_ref)
-            if qualifier in (None, target_dataset):
-                target_column = strip_qualifier(column_ref)
-                definition["type"] = lightdash_type
-        if target_column is None or target_column not in columns_by_dataset[target_dataset]:
+            definition["type"] = parsed.lightdash_type
+            inner = parsed.inner
+            if (
+                is_column_reference(inner)
+                and qualifier_of(inner) in (None, target_dataset)
+                and strip_qualifier(inner) in columns_by_dataset[target_dataset]
+            ):
+                target_column = strip_qualifier(inner)
+            else:
+                definition["sql"] = ossie_sql_to_lightdash(inner, target_dataset)
+            if parsed.percentile is not None:
+                definition["percentile"] = parsed.percentile
+            protected = _PROTECTED_AGGREGATION_KEYS
+        else:
             definition["type"] = extension_data.get("type", "number")
-            definition["sql"] = osi_sql_to_lightdash(expression, target_dataset)
-            target_column = None
+            definition["sql"] = ossie_sql_to_lightdash(expression, target_dataset)
+            protected = _PROTECTED_METRIC_KEYS
 
         definition.update(
             {
                 key: value
                 for key, value in extension_data.items()
-                if key not in _PROTECTED_METRIC_KEYS
+                if key not in protected
             }
         )
 
         if target_column is not None:
             column = columns_by_dataset[target_dataset][target_column]
-            metrics = (
-                column.setdefault("meta", {}).setdefault("metrics", {})
-            )
+            metrics = column.setdefault("meta", {}).setdefault("metrics", {})
             metrics[metric.name] = definition
         else:
             model = models_by_dataset[target_dataset]
