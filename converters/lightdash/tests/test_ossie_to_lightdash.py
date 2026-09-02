@@ -529,3 +529,32 @@ class TestOssieToLightdash:
         column = _column(model, "order_date")
         assert "meta" not in column
         assert column["config"]["meta"]["dimension"]["type"] == "date"
+
+    def test_lightdash_metric_name_comes_from_the_stash_then_the_prefix(self):
+        document = _document()
+        tampered = document.model_copy(deep=True)
+        tampered.semantic_model[0] = tampered.semantic_model[0].model_copy(
+            update={
+                "metrics": [
+                    OssieMetric(
+                        name="orders_total_amount",
+                        expression=_ansi("SUM(orders.amount)"),
+                        custom_extensions=[
+                            OssieCustomExtension(
+                                vendor_name="lightdash",
+                                data=json.dumps({"name": "total_amount", "label": "Total"}),
+                            )
+                        ],
+                    ),
+                    OssieMetric(name="orders_max_amount", expression=_ansi("MAX(orders.amount)")),
+                    OssieMetric(name="min_amount", expression=_ansi("MIN(orders.amount)")),
+                ]
+            }
+        )
+        result = OssieToLightdashConverter().convert(tampered)
+        metrics = _column(_model(result.output, "orders"), "amount")["meta"]["metrics"]
+        assert metrics == {
+            "total_amount": {"type": "sum", "label": "Total"},
+            "max_amount": {"type": "max"},
+            "min_amount": {"type": "min"},
+        }

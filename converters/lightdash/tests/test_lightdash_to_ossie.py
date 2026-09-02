@@ -113,15 +113,26 @@ SCHEMA_YML = {
 }
 
 
-def _metric(document, name):
-    return next(m for m in document.semantic_model[0].metrics if m.name == name)
-
-
-def _lightdash_data(element):
+def _raw_lightdash_data(element):
     for extension in element.custom_extensions or []:
         if extension.vendor_name == "lightdash":
             return json.loads(extension.data)
     return {}
+
+
+def _metric(document, name):
+    """Look a metric up by its Lightdash name (stashed in the extension)."""
+    return next(
+        m
+        for m in document.semantic_model[0].metrics
+        if _raw_lightdash_data(m).get("name") == name
+    )
+
+
+def _lightdash_data(element):
+    data = _raw_lightdash_data(element)
+    data.pop("name", None)
+    return data
 
 
 class TestLightdashToOssie:
@@ -575,3 +586,38 @@ class TestLightdashToOssie:
             "SUM(orders.amount)"
         )
         assert result.output.semantic_model[0].relationships[0].to == "customers"
+
+    def test_metric_names_are_qualified_with_the_model(self):
+        result = LightdashToOssieConverter().convert(SCHEMA_YML, schema="marts")
+        metric = _metric(result.output, "total_amount")
+        assert metric.name == "orders_total_amount"
+        assert _raw_lightdash_data(metric)["name"] == "total_amount"
+        assert [m.name for m in result.output.semantic_model[0].metrics][:3] == [
+            "orders_total_amount",
+            "orders_latest_amount",
+            "orders_median_amount",
+        ]
+
+    def test_qualified_names_that_still_collide_are_suffixed(self):
+        schema_yml = {
+            "models": [
+                {
+                    "name": "orders",
+                    "columns": [{"name": "amount", "meta": {"metrics": {"x_total": {"type": "sum"}}}}],
+                },
+                {
+                    "name": "orders_x",
+                    "columns": [{"name": "amount", "meta": {"metrics": {"total": {"type": "sum"}}}}],
+                },
+            ]
+        }
+        result = LightdashToOssieConverter().convert(schema_yml, schema="marts")
+        assert [m.name for m in result.output.semantic_model[0].metrics] == [
+            "orders_x_total",
+            "orders_x_total_2",
+        ]
+        assert [
+            issue.element_name
+            for issue in result.issues
+            if issue.issue_type is ConverterIssueType.METRIC_NAME_COLLISION
+        ] == ["total"]

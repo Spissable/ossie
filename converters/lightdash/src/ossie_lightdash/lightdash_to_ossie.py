@@ -60,7 +60,7 @@ LIGHTDASH_VENDOR_NAME = "lightdash"
 
 # Keys that are structurally encoded in Ossie vocabulary and therefore must NOT
 # be duplicated into the extension (a stale copy would win on export).
-_STRUCTURAL_METRIC_KEYS = {"sql", "description", "ai_hint"}
+_STRUCTURAL_METRIC_KEYS = {"sql", "description", "ai_hint", "name"}
 _STRUCTURAL_DIMENSION_KEYS = {"label", "sql", "ai_hint"}
 _STRUCTURAL_JOIN_KEYS = {"join", "sql_on"}
 
@@ -246,6 +246,7 @@ class LightdashToOssieConverter:
         metrics: List[OssieMetric] = []
         relationships: List[OssieRelationship] = []
         relationship_names: Set[str] = set()
+        metric_names: Set[str] = set()
 
         for model in schema_yml.get("models") or []:
             dataset, model_metrics, model_relationships = self._convert_model(
@@ -254,6 +255,7 @@ class LightdashToOssieConverter:
                 schema=schema,
                 issues=issues,
                 relationship_names=relationship_names,
+                metric_names=metric_names,
             )
             datasets.append(dataset)
             metrics.extend(model_metrics)
@@ -280,6 +282,7 @@ class LightdashToOssieConverter:
         schema: Optional[str],
         issues: List[ConverterIssue],
         relationship_names: Set[str],
+        metric_names: Set[str],
     ) -> Tuple[OssieDataset, List[OssieMetric], List[OssieRelationship]]:
         name = model["name"]
         source = ".".join(part for part in [database, schema, name] if part)
@@ -323,7 +326,9 @@ class LightdashToOssieConverter:
 
         metrics: List[OssieMetric] = []
         for metric_name, (definition, column_name) in definitions.items():
-            metric = self._convert_metric(metric_name, definition, column_name, context)
+            metric = self._convert_metric(
+                metric_name, definition, column_name, context, metric_names
+            )
             if metric is not None:
                 metrics.append(metric)
 
@@ -399,6 +404,7 @@ class LightdashToOssieConverter:
         definition: Dict[str, Any],
         column: Optional[str],
         context: _ModelContext,
+        metric_names: Set[str],
     ) -> Optional[OssieMetric]:
         if column is None and not definition.get("sql"):
             context.issues.append(
@@ -424,8 +430,22 @@ class LightdashToOssieConverter:
         extension_data = {
             key: value for key, value in definition.items() if key not in excluded
         }
+        # Lightdash scopes metric names per model; Ossie scopes them per
+        # semantic model. The Ossie name is Lightdash's own field id,
+        # `<model>_<metric>`, and the bare name travels in the extension so
+        # export restores it exactly.
+        extension_data["name"] = metric_name
+        qualified = f"{context.dataset_name}_{metric_name}"
+        ossie_name = _unique_name(qualified, metric_names)
+        if ossie_name != qualified:
+            context.issues.append(
+                ConverterIssue(
+                    issue_type=ConverterIssueType.METRIC_NAME_COLLISION,
+                    element_name=metric_name,
+                )
+            )
         return OssieMetric(
-            name=metric_name,
+            name=ossie_name,
             expression=_expression(expression, self._dialect),
             datatype=metric_datatype(
                 lightdash_type,

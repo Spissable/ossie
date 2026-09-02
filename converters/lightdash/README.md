@@ -50,6 +50,7 @@ ossie-lightdash import schema.yml semantic_model.json --database analytics_db --
 | `field.dimension.is_time` | `time_intervals: OFF` ↔ an explicit `is_time: false` on a temporal column; otherwise not carried — a non-temporal time axis (e.g. a year stored as `Integer`) has no Lightdash equivalent |
 | `field.label` / `.description` | `meta.dimension.label` / column `description` |
 | `field.expression` (≠ column name) | `meta.dimension.sql` (`dataset.col` ↔ `${TABLE}.col`) |
+| `metric.name` | Lightdash scopes metric names per model, Ossie per semantic model, so the Ossie name is Lightdash's own field id `<model>_<metric>` (`orders_total_amount`); the bare name is stashed in the extension and restored on export. An Ossie metric with no stash exports under its name minus a `<model>_` prefix, if it has one |
 | `metric.datatype` | derived on import: `Integer` for counts, `Decimal` for numeric aggregates over a `number` column, the column's type for `min`/`max`, the declared type for `boolean`/`string`/`date`/`timestamp` metrics |
 | `metric` that is one aggregation over a column (`SUM(ds.col)`, `COUNT(DISTINCT ds.col)`, `SUM(DISTINCT ds.col)`, `PERCENTILE_CONT(0.9) WITHIN GROUP (ORDER BY ds.col)`, ...) | column-level `meta.metrics.<name>` with a typed metric (`sum`, `count_distinct`, `sum_distinct`, `percentile` + `percentile: 90`, ...) |
 | `metric` that is one aggregation over any other expression (`AVG(CASE WHEN ds.status = 'done' THEN 1 ELSE 0 END)`) | model-level `meta.metrics.<name>` with the typed metric and the operand as `sql` |
@@ -98,6 +99,12 @@ Omitting `--schema` as well is reported as a `SOURCE_UNQUALIFIED` issue.
   are evaluated by Lightdash at query time and have no Ossie form: a dimension
   or metric whose SQL uses them is skipped on import with an
   `EXPRESSION_NOT_PORTABLE` issue.
+- **Metric names are normalised on the first round trip**: an Ossie metric
+  named `total_sales` on `store_sales` comes back as `store_sales_total_sales`
+  after Lightdash → Ossie, and stays stable from then on. A name that still
+  collides after qualification (model `orders` + metric `x_total` vs model
+  `orders_x` + metric `total`) is suffixed with a `METRIC_NAME_COLLISION`
+  issue.
 - **Metric-to-metric references** (`${other_metric}`) are inlined on import
   (`METRIC_REFERENCE_INLINED`), since Ossie metrics cannot reference each
   other; the export direction does not reconstruct the reference.

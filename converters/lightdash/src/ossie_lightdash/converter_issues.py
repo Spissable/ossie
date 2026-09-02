@@ -64,6 +64,9 @@ class ConverterIssueType(Enum):
     # home (column meta exists only for dimensions) and is dropped rather than
     # turning the field into a dimension.
     FIELD_ATTRIBUTE_NOT_REPRESENTABLE = "FIELD_ATTRIBUTE_NOT_REPRESENTABLE"
+    # Import: two metrics still share a name after qualification with their
+    # model name; the later one is suffixed.
+    METRIC_NAME_COLLISION = "METRIC_NAME_COLLISION"
 
 
 @dataclass(frozen=True)

@@ -24,6 +24,7 @@ model metrics cannot reference other tables, so the export direction drops
 them with a CROSS_DATASET_METRIC_DROPPED issue.
 """
 
+import json
 from pathlib import Path
 
 import yaml
@@ -37,6 +38,13 @@ from ossie_lightdash import (
 )
 
 TPCDS_PATH = Path(__file__).parent / ".." / ".." / ".." / "examples" / "tpcds_semantic_model.yaml"
+
+
+def _lightdash_name(metric) -> str:
+    for extension in metric.custom_extensions or []:
+        if extension.vendor_name == "lightdash":
+            return json.loads(extension.data)["name"]
+    return metric.name
 
 
 def _load_tpcds() -> OssieDocument:
@@ -137,11 +145,16 @@ class TestTpcdsRoundtrip:
             for metric in original.semantic_model[0].metrics or []
             if metric.name not in dropped
         }
+        # Re-imported metrics carry Lightdash's `<model>_<metric>` id as their
+        # Ossie name; the original name is the stashed Lightdash name.
         roundtripped_metrics = {
-            metric.name: metric.expression.dialects[0].expression
+            _lightdash_name(metric): metric.expression.dialects[0].expression
             for metric in reimported.output.semantic_model[0].metrics or []
         }
         assert set(roundtripped_metrics) == set(original_metrics)
+        assert "store_sales_total_sales" in {
+            metric.name for metric in reimported.output.semantic_model[0].metrics
+        }
         for name, expression in original_metrics.items():
             assert roundtripped_metrics[name].replace(" ", "") == expression.replace(
                 " ", ""

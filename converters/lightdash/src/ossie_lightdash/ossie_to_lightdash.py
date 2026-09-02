@@ -62,7 +62,7 @@ LIGHTDASH_VENDOR_NAME = "lightdash"
 # metrics whose expression is not a recognised aggregation: it is the channel
 # for types an expression cannot express (``boolean``, ``string``, ...).
 _PROTECTED_DIMENSION_KEYS = {"sql", "label", "ai_hint"}
-_PROTECTED_METRIC_KEYS = {"sql", "description", "ai_hint"}
+_PROTECTED_METRIC_KEYS = {"sql", "description", "ai_hint", "name"}
 _PROTECTED_AGGREGATION_KEYS = _PROTECTED_METRIC_KEYS | {"type", "percentile"}
 _PROTECTED_JOIN_KEYS = {"join", "sql_on", "alias"}
 
@@ -444,14 +444,25 @@ class OssieToLightdashConverter:
             }
         )
 
+        # The Lightdash name is the stashed one, else the Ossie name with the
+        # `<model>_` field-id prefix removed, else the Ossie name as is.
+        lightdash_name = extension_data.get("name")
+        if not isinstance(lightdash_name, str) or not lightdash_name:
+            prefix = f"{target_dataset}_"
+            lightdash_name = (
+                metric.name[len(prefix):]
+                if metric.name.startswith(prefix) and len(metric.name) > len(prefix)
+                else metric.name
+            )
+
         if target_column is not None:
             column = columns_by_dataset[target_dataset][target_column]
             metrics = column.setdefault("meta", {}).setdefault("metrics", {})
-            metrics[metric.name] = definition
+            metrics[lightdash_name] = definition
         else:
             model = models_by_dataset[target_dataset]
             metrics = model.setdefault("meta", {}).setdefault("metrics", {})
-            metrics[metric.name] = definition
+            metrics[lightdash_name] = definition
 
     @staticmethod
     def _resolve_target_dataset(
