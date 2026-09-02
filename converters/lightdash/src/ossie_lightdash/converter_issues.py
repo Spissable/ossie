@@ -80,6 +80,9 @@ class ConverterIssueType(Enum):
     # Export (Lightdash YAML): stashed column meta other than
     # `additional_dimensions` has no place on a YAML dimension.
     COLUMN_META_NOT_REPRESENTABLE = "COLUMN_META_NOT_REPRESENTABLE"
+    # Import: --catalog was given but has no entry for the model, so its
+    # columns get no types from it.
+    CATALOG_MODEL_MISSING = "CATALOG_MODEL_MISSING"
     # Import: a join targets a model that is not in the input, so the
     # relationship would reference an unknown dataset and is skipped.
     JOIN_TARGET_UNKNOWN = "JOIN_TARGET_UNKNOWN"
@@ -107,6 +110,7 @@ ISSUE_EXPLANATIONS = {
     ConverterIssueType.DIMENSION_TYPE_DEFAULTED: "no datatype on the field; dimension type set to string",
     ConverterIssueType.COLUMN_META_NOT_REPRESENTABLE: "stashed column meta other than additional_dimensions has no place on a model-file dimension; dropped",
     ConverterIssueType.JOIN_TARGET_UNKNOWN: "join to a model that is not in the input; skipped",
+    ConverterIssueType.CATALOG_MODEL_MISSING: "not in the catalog (stale, or never built); its columns get no types from it",
 }
 
 

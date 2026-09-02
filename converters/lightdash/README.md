@@ -49,8 +49,18 @@ cd my-project && lightdash deploy
 ossie-lightdash export semantic_model.yaml schema.yml --format dbt-meta --dialect BIGQUERY [--meta-under-config]
 
 # Lightdash dbt meta -> Ossie (a schema file, or a whole dbt project directory)
-ossie-lightdash import path/to/dbt semantic_model.json --database analytics_db --schema marts --dialect BIGQUERY
+ossie-lightdash import path/to/dbt semantic_model.json --database analytics_db --schema marts --dialect BIGQUERY \
+  --catalog path/to/dbt/target/catalog.json
 ```
+
+`--catalog` takes the `catalog.json` that `dbt docs generate` writes: the
+warehouse's real column types fill in `datatype` for every column without an
+authored `type` (authored types win), reduced to Ossie's vocabulary
+(`INT64` → `Integer`, `NUMBER(12,2)` → `Decimal`, `TIMESTAMP_TZ` →
+`DateTimeTz`, ...). Lightdash learns most of its types from the warehouse
+rather than from YAML, so without a catalog most fields leave untyped. A
+model the catalog does not know is reported (`CATALOG_MODEL_MISSING`), which
+is also how a stale catalog shows.
 
 The default export writes `my-project/lightdash/models/<model>.yml`, one file
 per dataset, and a starter `my-project/lightdash.config.yml` whose
@@ -194,9 +204,10 @@ each other.
 
 **Types.** Lightdash's `number` covers Ossie's `Integer`, `Decimal` and
 `Float`, and its `timestamp` covers `DateTime` and `DateTimeTz`, so datatypes
-round-trip by category rather than by exact member. A column with no authored
-`type` leaves without a datatype, which the spec allows; Lightdash learns
-those types from the warehouse, not from the YAML.
+authored in YAML round-trip by category rather than by exact member. A column
+with no authored `type` leaves without a datatype unless `--catalog` supplies
+the warehouse's, in which case the exact member is known; Lightdash itself
+learns those types from the warehouse, not from the YAML.
 
 ### Kept for Lightdash only
 
@@ -255,7 +266,7 @@ Every loss or approximation is reported as a `ConverterIssue`: on import
 `ALIAS_REFERENCE_FLATTENED`, `METRIC_NAME_COLLISION`, `SOURCE_UNQUALIFIED`,
 `METRIC_SQL_MISSING`; on export `CROSS_DATASET_METRIC_DROPPED`,
 `FIELD_REFERENCE_UNJOINED`, `TIME_ROLE_NOT_REPRESENTABLE`,
-`DIMENSION_TYPE_DEFAULTED`, `COLUMN_META_NOT_REPRESENTABLE`, `DIALECT_UNAVAILABLE`,
+`DIMENSION_TYPE_DEFAULTED`, `COLUMN_META_NOT_REPRESENTABLE`, `CATALOG_MODEL_MISSING`, `DIALECT_UNAVAILABLE`,
 `RELATIONSHIP_COLUMNS_MISMATCHED`, `EXTENSION_DATA_INVALID`,
 `FOREIGN_EXTENSION_IGNORED`.
 

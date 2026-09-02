@@ -866,3 +866,52 @@ class TestLightdashToOssie:
             for issue in result.issues
             if issue.issue_type is ConverterIssueType.ROW_FILTER_NOT_PORTABLE
         ] == ["orders", "customers"]
+
+    def test_catalog_types_fill_the_gaps_but_never_override_authored_types(self):
+        from ossie_lightdash.catalog import warehouse_type_to_datatype
+
+        assert warehouse_type_to_datatype("INT64") is OssieDataType.INTEGER
+        assert warehouse_type_to_datatype("NUMBER(38,0)") is OssieDataType.INTEGER
+        assert warehouse_type_to_datatype("NUMBER(12,2)") is OssieDataType.DECIMAL
+        assert warehouse_type_to_datatype("NUMERIC") is OssieDataType.DECIMAL
+        assert warehouse_type_to_datatype("character varying(255)") is OssieDataType.STRING
+        assert warehouse_type_to_datatype("TIMESTAMP_TZ(9)") is OssieDataType.DATE_TIME_TZ
+        assert warehouse_type_to_datatype("ARRAY<STRING>") is None
+
+        schema_yml = {
+            "models": [
+                {
+                    "name": "results",
+                    "columns": [
+                        {"name": "points", "meta": {"dimension": {"type": "string"}}},
+                        {"name": "position", "meta": {"dimension": {"label": "Position"}}},
+                        {"name": "race_date"},
+                        {"name": "payload"},
+                        {"name": "laps", "meta": {"metrics": {"total_laps": {"type": "sum"}}}},
+                    ],
+                },
+                {"name": "orphan", "columns": [{"name": "id"}]},
+            ]
+        }
+        catalog = {
+            "results": {
+                "points": "FLOAT64",
+                "position": "INT64",
+                "race_date": "DATE",
+                "payload": "STRUCT<a INT64>",
+                "laps": "INT64",
+            }
+        }
+        result = LightdashToOssieConverter().convert(schema_yml, schema="marts", catalog=catalog)
+        fields = {f.name: f for f in result.output.semantic_model[0].datasets[0].fields}
+        assert fields["points"].datatype is OssieDataType.STRING  # authored wins
+        assert fields["position"].datatype is OssieDataType.INTEGER  # gap filled
+        assert fields["race_date"].datatype is OssieDataType.DATE  # no meta at all
+        assert fields["payload"].datatype is None  # outside the vocabulary
+        # A catalog type also feeds the metric datatype.
+        assert _metric(result.output, "total_laps").datatype is OssieDataType.DECIMAL
+        assert [
+            issue.element_name
+            for issue in result.issues
+            if issue.issue_type is ConverterIssueType.CATALOG_MODEL_MISSING
+        ] == ["orphan"]

@@ -48,7 +48,12 @@ from ossie_lightdash.converter_issues import (
     ConverterIssueType,
     ConverterResult,
 )
-from ossie_lightdash.datatype_utils import lightdash_type_to_datatype, metric_datatype
+from ossie_lightdash.catalog import Catalog, warehouse_type_to_datatype
+from ossie_lightdash.datatype_utils import (
+    datatype_to_lightdash_type,
+    lightdash_type_to_datatype,
+    metric_datatype,
+)
 from ossie_lightdash.expression_utils import (
     AGGREGATE_TYPES,
     build_aggregation,
@@ -178,6 +183,8 @@ class _ModelContext:
         self.issues = issues
         self.column_types: Dict[str, str] = {}
         self.column_names: List[str] = []
+        # Datatypes from --catalog, consulted when a column has no authored type.
+        self.catalog_datatypes: Dict[str, "OssieDataType"] = {}
         self._expressions: Dict[str, Optional[str]] = {}
         self._resolving: Set[str] = set()
 
@@ -271,6 +278,7 @@ class LightdashToOssieConverter:
         database: Optional[str] = None,
         schema: Optional[str] = None,
         semantic_model_name: str = "lightdash_semantic_model",
+        catalog: Optional[Catalog] = None,
     ) -> ConverterResult[OssieDocument]:
         issues: List[ConverterIssue] = []
         datasets: List[OssieDataset] = []
@@ -290,6 +298,7 @@ class LightdashToOssieConverter:
                 schema=schema,
                 issues=issues,
                 metric_names=metric_names,
+                catalog=catalog,
             )
             datasets.append(dataset)
             metrics.extend(model_metrics)
@@ -353,6 +362,7 @@ class LightdashToOssieConverter:
         schema: Optional[str],
         issues: List[ConverterIssue],
         metric_names: Set[str],
+        catalog: Optional[Catalog] = None,
     ) -> Tuple[OssieDataset, List[OssieMetric], List[_Edge], List[_Edge]]:
         name = model["name"]
         source = ".".join(part for part in [database, schema, name] if part)
@@ -384,10 +394,30 @@ class LightdashToOssieConverter:
 
         context = _ModelContext(name, aliases, definitions, issues)
         context.column_names = [column["name"] for column in model.get("columns") or []]
+        if catalog is not None:
+            if name in catalog:
+                for column_name, warehouse_type in catalog[name].items():
+                    datatype = warehouse_type_to_datatype(warehouse_type)
+                    if datatype is not None:
+                        context.catalog_datatypes[column_name] = datatype
+            else:
+                issues.append(
+                    ConverterIssue(
+                        issue_type=ConverterIssueType.CATALOG_MODEL_MISSING,
+                        element_name=name,
+                    )
+                )
         for column in model.get("columns") or []:
             dimension_meta = lightdash_meta(column).get("dimension") or {}
+            # Authored types are intent and win; the catalog fills the gaps.
             if dimension_meta.get("type"):
                 context.column_types[column["name"]] = dimension_meta["type"]
+            elif column["name"].lower() in context.catalog_datatypes:
+                lightdash_type = datatype_to_lightdash_type(
+                    context.catalog_datatypes[column["name"].lower()]
+                )
+                if lightdash_type is not None:
+                    context.column_types[column["name"]] = lightdash_type
 
         fields: List[OssieField] = []
         for column in model.get("columns") or []:
@@ -449,6 +479,8 @@ class LightdashToOssieConverter:
         # hidden column is the closest Lightdash comes to a measure-only field.
         hidden = bool((dimension_meta or {}).get("hidden"))
         dimension: Optional[OssieDimension] = None if hidden else OssieDimension()
+        if dimension_meta is None:
+            datatype = context.catalog_datatypes.get(column_name.lower())
         if dimension_meta is not None:
             label = dimension_meta.get("label")
             ai_context = _ai_context(dimension_meta.get("ai_hint"))
@@ -458,6 +490,8 @@ class LightdashToOssieConverter:
                     return None
                 expression = rewritten
             datatype = lightdash_type_to_datatype(dimension_meta.get("type"))
+            if datatype is None:
+                datatype = context.catalog_datatypes.get(column_name.lower())
             # `is_time` is a role marker in Ossie, not a type. Lightdash's only
             # role marker is `time_intervals: OFF`, which withdraws a temporal
             # column from the time axis; otherwise `is_time` is left unset so

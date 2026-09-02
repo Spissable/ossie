@@ -16,6 +16,7 @@
 # under the License.
 """Command line round trips through both output formats."""
 
+import json
 from pathlib import Path
 
 import pytest
@@ -96,3 +97,18 @@ def test_import_reads_a_whole_dbt_project(tmp_path):
     document = OssieDocument.model_validate(yaml.safe_load(document_path.read_text()))
     assert [d.name for d in document.semantic_model[0].datasets] == ["customers", "orders", "statuses"]
     assert document.semantic_model[0].metrics[0].name == "orders_total"
+
+def test_import_takes_types_from_a_dbt_catalog(tmp_path):
+    schema_yml = tmp_path / "schema.yml"
+    schema_yml.write_text("models:\n  - name: races\n    columns:\n      - name: race_date\n      - name: laps\n")
+    catalog = tmp_path / "catalog.json"
+    catalog.write_text(json.dumps({
+        "nodes": {
+            "model.demo.races": {"columns": {"race_date": {"type": "DATE"}, "LAPS": {"type": "INT64"}}}
+        }
+    }))
+    out = tmp_path / "model.yaml"
+    assert main(["import", str(schema_yml), str(out), "--schema", "marts", "--catalog", str(catalog)]) == 0
+    fields = {f["name"]: f for f in yaml.safe_load(out.read_text())["semantic_model"][0]["datasets"][0]["fields"]}
+    assert fields["race_date"]["datatype"] == "Date"
+    assert fields["laps"]["datatype"] == "Integer"

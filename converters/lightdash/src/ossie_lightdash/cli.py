@@ -26,6 +26,7 @@ from typing import List, Optional
 import yaml
 
 from ossie import OssieDialect, OssieDocument
+from ossie_lightdash.catalog import load_catalog
 from ossie_lightdash.converter_issues import ISSUE_EXPLANATIONS
 from ossie_lightdash.dbt_project import load_schema
 from ossie_lightdash.lightdash_to_ossie import LightdashToOssieConverter
@@ -153,6 +154,13 @@ def main(argv: Optional[List[str]] = None) -> int:
         default=OssieDialect.ANSI_SQL.name,
         help="dialect the Lightdash SQL is written in (the project's warehouse)",
     )
+    import_parser.add_argument(
+        "--catalog",
+        type=Path,
+        default=None,
+        help="dbt target/catalog.json (from `dbt docs generate`): warehouse column "
+        "types fill in datatypes for columns without an authored type",
+    )
 
     args = parser.parse_args(argv)
 
@@ -186,6 +194,7 @@ def main(argv: Optional[List[str]] = None) -> int:
             database=args.database,
             schema=args.schema,
             semantic_model_name=args.semantic_model_name,
+            catalog=load_catalog(args.catalog) if args.catalog else None,
         )
         semantic_model = result.output.semantic_model[0]
         summary = (
