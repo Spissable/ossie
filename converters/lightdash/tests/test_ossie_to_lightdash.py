@@ -520,3 +520,12 @@ class TestOssieToLightdash:
             "type": "date",
             "time_intervals": "OFF",
         }
+
+    def test_meta_can_be_placed_under_config(self):
+        result = OssieToLightdashConverter(meta_under_config=True).convert(_document())
+        model = _model(result.output, "orders")
+        assert "meta" not in model
+        assert model["config"]["meta"]["joins"][0]["join"] == "customers"
+        column = _column(model, "order_date")
+        assert "meta" not in column
+        assert column["config"]["meta"]["dimension"]["type"] == "date"

@@ -116,6 +116,13 @@ def _ai_hint(ai_context: Any) -> Any:
     return hints[0] if len(hints) == 1 else hints
 
 
+def _nest_meta_under_config(node: Dict[str, Any]) -> None:
+    """Move a node's ``meta`` under ``config`` (the dbt 1.10+ placement)."""
+    meta = node.pop("meta", None)
+    if meta:
+        node["config"] = {"meta": meta}
+
+
 def _model_name_for(dataset: OssieDataset) -> str:
     """A Lightdash table is addressed by its dbt model name = the source's table part."""
     return dataset.source.rsplit(".", 1)[-1]
@@ -129,14 +136,25 @@ class OssieToLightdashConverter:
     from its first dialect with a ``DIALECT_UNAVAILABLE`` issue.
     """
 
-    def __init__(self, dialect: OssieDialect = OssieDialect.ANSI_SQL) -> None:
+    def __init__(
+        self,
+        dialect: OssieDialect = OssieDialect.ANSI_SQL,
+        *,
+        meta_under_config: bool = False,
+    ) -> None:
         self._dialect = dialect
+        self._meta_under_config = meta_under_config
 
     def convert(self, document: OssieDocument) -> ConverterResult[Dict[str, Any]]:
         issues: List[ConverterIssue] = []
         models: List[Dict[str, Any]] = []
         for semantic_model in document.semantic_model:
             models.extend(self._convert_semantic_model(semantic_model, issues))
+        if self._meta_under_config:
+            for model in models:
+                _nest_meta_under_config(model)
+                for column in model.get("columns") or []:
+                    _nest_meta_under_config(column)
         return ConverterResult(output={"version": 2, "models": models}, issues=issues)
 
     def _pick_expression(

@@ -67,6 +67,13 @@ labels the emitted expressions with that warehouse's Ossie dialect
 prefers that dialect, falls back to `ANSI_SQL`, and takes the first available
 dialect with a `DIALECT_UNAVAILABLE` issue when an expression offers neither.
 
+## Where the meta lives
+
+dbt 1.10+ places `meta` under `config:`; Lightdash reads both the top-level
+`meta` and `config.meta` and lets `config.meta` win, and so does the import
+direction. Export writes top-level `meta` by default; pass
+`--meta-under-config` to emit the `config.meta` placement instead.
+
 ## Recommended source shape for dbt-native flows
 
 If the Ossie documents are also consumed by dbt's native OSI parsing, prefer

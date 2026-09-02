@@ -103,6 +103,27 @@ def _primary_key(primary_key: Any) -> Optional[List[str]]:
     return None
 
 
+def _merge_meta(base: Any, override: Any) -> Dict[str, Any]:
+    """Deep-merge two meta blocks; keys in ``override`` win."""
+    merged: Dict[str, Any] = dict(base) if isinstance(base, dict) else {}
+    if isinstance(override, dict):
+        for key, value in override.items():
+            if isinstance(value, dict) and isinstance(merged.get(key), dict):
+                merged[key] = _merge_meta(merged[key], value)
+            else:
+                merged[key] = value
+    return merged
+
+
+def lightdash_meta(node: Dict[str, Any]) -> Dict[str, Any]:
+    """The Lightdash meta of a dbt model or column.
+
+    dbt 1.10+ moved ``meta`` under ``config``; Lightdash reads both and lets
+    ``config.meta`` win, so the converter merges them the same way.
+    """
+    return _merge_meta(node.get("meta"), (node.get("config") or {}).get("meta"))
+
+
 def _unique_name(base: str, used: Set[str]) -> str:
     name = base
     suffix = 2
@@ -270,7 +291,7 @@ class LightdashToOssieConverter:
                 )
             )
 
-        model_meta = model.get("meta") or {}
+        model_meta = lightdash_meta(model)
         joins = model_meta.get("joins") or []
         aliases = {
             join["alias"]: join["join"]
@@ -282,7 +303,7 @@ class LightdashToOssieConverter:
         # `${metric}` references can be inlined.
         definitions: Dict[str, Tuple[Dict[str, Any], Optional[str]]] = {}
         for column in model.get("columns") or []:
-            column_meta = column.get("meta") or {}
+            column_meta = lightdash_meta(column)
             for metric_name, definition in (column_meta.get("metrics") or {}).items():
                 definitions[metric_name] = (definition, column["name"])
         for metric_name, definition in (model_meta.get("metrics") or {}).items():
@@ -290,7 +311,7 @@ class LightdashToOssieConverter:
 
         context = _ModelContext(name, aliases, definitions, issues)
         for column in model.get("columns") or []:
-            dimension_meta = (column.get("meta") or {}).get("dimension") or {}
+            dimension_meta = lightdash_meta(column).get("dimension") or {}
             if dimension_meta.get("type"):
                 context.column_types[column["name"]] = dimension_meta["type"]
 
@@ -327,7 +348,7 @@ class LightdashToOssieConverter:
         self, column: Dict[str, Any], context: _ModelContext
     ) -> Optional[OssieField]:
         column_name = column["name"]
-        dimension_meta = (column.get("meta") or {}).get("dimension")
+        dimension_meta = lightdash_meta(column).get("dimension")
 
         expression = column_name
         dimension: Optional[OssieDimension] = None

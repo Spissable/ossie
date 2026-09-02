@@ -57,6 +57,11 @@ def main(argv: Optional[List[str]] = None) -> int:
         default=OssieDialect.ANSI_SQL.name,
         help="preferred expression dialect (falls back to ANSI_SQL)",
     )
+    export_parser.add_argument(
+        "--meta-under-config",
+        action="store_true",
+        help="write Lightdash meta under `config:` (dbt 1.10+) instead of top-level `meta:`",
+    )
 
     import_parser = subparsers.add_parser(
         "import", help="Lightdash dbt schema.yml -> Ossie document (.json/.yaml)"
@@ -78,9 +83,9 @@ def main(argv: Optional[List[str]] = None) -> int:
     args = parser.parse_args(argv)
 
     if args.command == "export":
-        result = OssieToLightdashConverter(OssieDialect[args.dialect]).convert(
-            _read_document(args.input)
-        )
+        result = OssieToLightdashConverter(
+            OssieDialect[args.dialect], meta_under_config=args.meta_under_config
+        ).convert(_read_document(args.input))
         args.output.write_text(
             yaml.safe_dump(result.output, sort_keys=False, allow_unicode=True),
             encoding="utf-8",

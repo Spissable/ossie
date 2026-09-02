@@ -532,3 +532,46 @@ class TestLightdashToOssie:
         assert _metric(result.output, "total_amount").datatype is OssieDataType.DECIMAL
         assert _metric(result.output, "latest_amount").datatype is OssieDataType.DECIMAL
         assert _metric(result.output, "conversion_rate").datatype is None
+
+    def test_config_meta_is_read_and_wins_over_meta(self):
+        schema_yml = {
+            "models": [
+                {
+                    "name": "orders",
+                    "meta": {"primary_key": "legacy_id"},
+                    "config": {
+                        "meta": {
+                            "primary_key": "order_id",
+                            "joins": [
+                                {
+                                    "join": "customers",
+                                    "sql_on": "${orders.customer_id} = ${customers.customer_id}",
+                                }
+                            ],
+                        }
+                    },
+                    "columns": [
+                        {
+                            "name": "amount",
+                            "meta": {"dimension": {"type": "number", "label": "Amount"}},
+                            "config": {
+                                "meta": {
+                                    "dimension": {"label": "Order amount"},
+                                    "metrics": {"total_amount": {"type": "sum"}},
+                                }
+                            },
+                        }
+                    ],
+                },
+                {"name": "customers", "columns": [{"name": "customer_id"}]},
+            ]
+        }
+        result = LightdashToOssieConverter().convert(schema_yml, schema="marts")
+        orders = result.output.semantic_model[0].datasets[0]
+        assert orders.primary_key == ["order_id"]
+        assert orders.fields[0].label == "Order amount"
+        assert orders.fields[0].datatype is OssieDataType.DECIMAL
+        assert _metric(result.output, "total_amount").expression.dialects[0].expression == (
+            "SUM(orders.amount)"
+        )
+        assert result.output.semantic_model[0].relationships[0].to == "customers"
