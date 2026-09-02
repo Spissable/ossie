@@ -829,3 +829,40 @@ class TestLightdashToOssie:
         assert fields["hidden_key"].datatype is OssieDataType.DECIMAL
         assert fields["hidden_key"].label == "Key"
         assert _lightdash_data(fields["hidden_key"]) == {"type": "number"}
+
+    def test_filters_that_other_consumers_cannot_see_are_reported(self):
+        schema_yml = {
+            "models": [
+                {
+                    "name": "orders",
+                    "meta": {"sql_filter": "${TABLE}.deleted = false"},
+                    "columns": [
+                        {
+                            "name": "amount",
+                            "meta": {
+                                "metrics": {
+                                    "paid_amount": {"type": "sum", "filters": [{"status": "paid"}]},
+                                    "total_amount": {"type": "sum"},
+                                }
+                            },
+                        }
+                    ],
+                },
+                {"name": "customers", "meta": {"required_filters": [{"region": "EU"}]}, "columns": []},
+            ]
+        }
+        result = LightdashToOssieConverter().convert(schema_yml, schema="marts")
+        # The values are stashed for Lightdash, and the loss for everyone else is reported.
+        paid = _metric(result.output, "paid_amount")
+        assert paid.expression.dialects[0].expression == "SUM(orders.amount)"
+        assert _lightdash_data(paid) == {"filters": [{"status": "paid"}]}
+        assert [
+            issue.element_name
+            for issue in result.issues
+            if issue.issue_type is ConverterIssueType.METRIC_FILTER_NOT_PORTABLE
+        ] == ["paid_amount"]
+        assert [
+            issue.element_name
+            for issue in result.issues
+            if issue.issue_type is ConverterIssueType.ROW_FILTER_NOT_PORTABLE
+        ] == ["orders", "customers"]

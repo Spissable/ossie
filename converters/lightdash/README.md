@@ -98,7 +98,8 @@ Omitting `--schema` as well is reported as a `SOURCE_UNQUALIFIED` issue.
 
 Every loss or approximation is reported as a `ConverterIssue`: on import
 `JOIN_STASHED` / `JOIN_SQL_UNPARSED` (a join kept for Lightdash only),
-`JOIN_TARGET_UNKNOWN`, `EXPRESSION_NOT_PORTABLE`, `METRIC_REFERENCE_INLINED`,
+`JOIN_TARGET_UNKNOWN`, `METRIC_FILTER_NOT_PORTABLE`, `ROW_FILTER_NOT_PORTABLE`,
+`EXPRESSION_NOT_PORTABLE`, `METRIC_REFERENCE_INLINED`,
 `ALIAS_REFERENCE_FLATTENED`, `METRIC_NAME_COLLISION`, `SOURCE_UNQUALIFIED`,
 `METRIC_SQL_MISSING`; on export `CROSS_DATASET_METRIC_DROPPED`,
 `FIELD_REFERENCE_UNJOINED`, `TIME_ROLE_NOT_REPRESENTABLE`, `DIALECT_UNAVAILABLE`,
@@ -149,9 +150,13 @@ Every loss or approximation is reported as a `ConverterIssue`: on import
   reported with a `TIME_ROLE_NOT_REPRESENTABLE` issue on export.
 - **Stashed meta is Lightdash-only.** Model meta without Ossie vocabulary and
   joins Ossie cannot reproduce round-trip exactly through the dataset's
-  extension, but other consumers do not see them; `sql_filter` in particular
-  restricts every Lightdash query while the Ossie dataset does not (a query
-  `source` would carry it, not done yet).
+  extension, but other consumers do not see them. Two of these change query
+  results rather than presentation and are therefore reported: a metric's
+  `filters` (`METRIC_FILTER_NOT_PORTABLE`: the Ossie expression is the
+  unfiltered aggregate) and a model's `sql_filter` / `required_filters`
+  (`ROW_FILTER_NOT_PORTABLE`: the Ossie dataset is unrestricted). Encoding
+  metric filters as `CASE WHEN` and `sql_filter` as a query `source` is the
+  planned fix.
 - **Standalone Lightdash YAML projects** (Lightdash without dbt) are not
   supported yet; the converter targets the dbt-meta flavour.
 - Custom extensions from other vendors are ignored on export (reported as

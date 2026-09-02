@@ -67,6 +67,8 @@ _STRUCTURAL_JOIN_KEYS = {"join", "sql_on"}
 # Model meta with Ossie vocabulary; everything else is stashed on the dataset.
 _HANDLED_MODEL_KEYS = {"metrics", "joins", "primary_key", "ai_hint"}
 _HANDLED_COLUMN_KEYS = {"dimension", "metrics"}
+# Model meta that changes query results, not just presentation.
+_ROW_FILTER_KEYS = ("sql_filter", "sql_where", "required_filters")
 
 _JOIN_PAIR_RE = re.compile(
     r"\$\{(\w+)\.(\w+)\}\s*=\s*\$\{(\w+)\.(\w+)\}",
@@ -412,6 +414,13 @@ class LightdashToOssieConverter:
         }
         if stashed_joins:
             stash["joins"] = stashed_joins
+        if any(model_meta.get(key) for key in _ROW_FILTER_KEYS):
+            issues.append(
+                ConverterIssue(
+                    issue_type=ConverterIssueType.ROW_FILTER_NOT_PORTABLE,
+                    element_name=name,
+                )
+            )
 
         dataset = OssieDataset(
             name=name,
@@ -499,6 +508,13 @@ class LightdashToOssieConverter:
         expression = context.metric_expression(metric_name)
         if expression is None:
             return None
+        if definition.get("filters"):
+            context.issues.append(
+                ConverterIssue(
+                    issue_type=ConverterIssueType.METRIC_FILTER_NOT_PORTABLE,
+                    element_name=metric_name,
+                )
+            )
 
         # Typed aggregations (and their percentile) are recovered from the
         # expression on export; only types an expression cannot encode

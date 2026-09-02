@@ -68,6 +68,12 @@ class ConverterIssueType(Enum):
     # Import: two metrics still share a name after qualification with their
     # model name; the later one is suffixed.
     METRIC_NAME_COLLISION = "METRIC_NAME_COLLISION"
+    # Import: a metric's `filters` are kept for Lightdash only; the Ossie
+    # expression is unfiltered, so other consumers compute a different number.
+    METRIC_FILTER_NOT_PORTABLE = "METRIC_FILTER_NOT_PORTABLE"
+    # Import: a model's `sql_filter` / `sql_where` / `required_filters` are kept
+    # for Lightdash only; the Ossie dataset is unrestricted for other consumers.
+    ROW_FILTER_NOT_PORTABLE = "ROW_FILTER_NOT_PORTABLE"
     # Import: a join targets a model that is not in the input, so the
     # relationship would reference an unknown dataset and is skipped.
     JOIN_TARGET_UNKNOWN = "JOIN_TARGET_UNKNOWN"
