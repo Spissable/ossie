@@ -497,7 +497,8 @@ class TestLightdashToOssie:
                             "meta": {"dimension": {"type": "number", "sql": "${sold_date.year}"}},
                         }
                     ],
-                }
+                },
+                {"name": "date_dim", "columns": [{"name": "date_id"}, {"name": "year"}]},
             ]
         }
         result = LightdashToOssieConverter().convert(schema_yml, schema="marts")
@@ -621,3 +622,29 @@ class TestLightdashToOssie:
             for issue in result.issues
             if issue.issue_type is ConverterIssueType.METRIC_NAME_COLLISION
         ] == ["total"]
+
+    def test_seeds_are_datasets_and_joins_to_missing_models_are_skipped(self):
+        schema_yml = {
+            "models": [
+                {
+                    "name": "orders",
+                    "meta": {
+                        "joins": [
+                            {"join": "order_statuses", "sql_on": "${orders.status_id} = ${order_statuses.id}"},
+                            {"join": "not_in_this_file", "sql_on": "${orders.x} = ${not_in_this_file.x}"},
+                        ]
+                    },
+                    "columns": [{"name": "status_id"}],
+                }
+            ],
+            "seeds": [{"name": "order_statuses", "columns": [{"name": "id"}]}],
+        }
+        result = LightdashToOssieConverter().convert(schema_yml, schema="marts")
+        semantic_model = result.output.semantic_model[0]
+        assert [dataset.name for dataset in semantic_model.datasets] == ["orders", "order_statuses"]
+        assert [relationship.to for relationship in semantic_model.relationships] == ["order_statuses"]
+        assert [
+            issue.element_name
+            for issue in result.issues
+            if issue.issue_type is ConverterIssueType.JOIN_TARGET_UNKNOWN
+        ] == ["orders -> not_in_this_file"]

@@ -248,7 +248,9 @@ class LightdashToOssieConverter:
         relationship_names: Set[str] = set()
         metric_names: Set[str] = set()
 
-        for model in schema_yml.get("models") or []:
+        # Seeds are tables to Lightdash just like models.
+        nodes = [*(schema_yml.get("models") or []), *(schema_yml.get("seeds") or [])]
+        for model in nodes:
             dataset, model_metrics, model_relationships = self._convert_model(
                 model,
                 database=database,
@@ -260,6 +262,20 @@ class LightdashToOssieConverter:
             datasets.append(dataset)
             metrics.extend(model_metrics)
             relationships.extend(model_relationships)
+
+        dataset_names = {dataset.name for dataset in datasets}
+        known_relationships: List[OssieRelationship] = []
+        for relationship in relationships:
+            if relationship.to in dataset_names:
+                known_relationships.append(relationship)
+            else:
+                issues.append(
+                    ConverterIssue(
+                        issue_type=ConverterIssueType.JOIN_TARGET_UNKNOWN,
+                        element_name=f"{relationship.from_dataset} -> {relationship.to}",
+                    )
+                )
+        relationships = known_relationships
 
         document = OssieDocument(
             version="0.2.0.dev0",

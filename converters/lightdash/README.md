@@ -68,6 +68,13 @@ labels the emitted expressions with that warehouse's Ossie dialect
 prefers that dialect, falls back to `ANSI_SQL`, and takes the first available
 dialect with a `DIALECT_UNAVAILABLE` issue when an expression offers neither.
 
+## Input shape
+
+`import` reads the `models:` and `seeds:` entries of a dbt schema file (seeds
+are tables to Lightdash too). A join whose target is not among them is skipped
+with a `JOIN_TARGET_UNKNOWN` issue, since Ossie relationships may only
+reference datasets in the document.
+
 ## Where the meta lives
 
 dbt 1.10+ places `meta` under `config:`; Lightdash reads both the top-level

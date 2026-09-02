@@ -67,6 +67,9 @@ class ConverterIssueType(Enum):
     # Import: two metrics still share a name after qualification with their
     # model name; the later one is suffixed.
     METRIC_NAME_COLLISION = "METRIC_NAME_COLLISION"
+    # Import: a join targets a model that is not in the input, so the
+    # relationship would reference an unknown dataset and is skipped.
+    JOIN_TARGET_UNKNOWN = "JOIN_TARGET_UNKNOWN"
 
 
 @dataclass(frozen=True)
