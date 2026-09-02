@@ -21,7 +21,7 @@ carry Lightdash dimensions, metrics and joins. Structural information becomes
 first-class Ossie vocabulary (datasets, fields, metrics, relationships);
 Lightdash presentation attributes without Ossie vocabulary (``format``,
 ``round``, ``group_label``, ``hidden``, ...) are preserved in
-``custom_extensions`` entries with ``vendor_name: "lightdash"`` so that the
+``custom_extensions`` entries with ``vendor_name: LIGHTDASH`` so that the
 export direction can reproduce them exactly.
 """
 
@@ -57,7 +57,7 @@ from ossie_lightdash.expression_utils import (
     qualify_bare_columns,
 )
 
-LIGHTDASH_VENDOR_NAME = "lightdash"
+LIGHTDASH_VENDOR_NAME = "LIGHTDASH"
 
 # Keys that are structurally encoded in Ossie vocabulary and therefore must NOT
 # be duplicated into the extension (a stale copy would win on export).

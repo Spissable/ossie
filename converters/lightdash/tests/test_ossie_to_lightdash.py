@@ -33,7 +33,11 @@ from ossie import (
     OssieSemanticModel,
 )
 
-from ossie_lightdash import ConverterIssueType, OssieToLightdashConverter
+from ossie_lightdash import (
+    ConverterIssueType,
+    LightdashToOssieConverter,
+    OssieToLightdashConverter,
+)
 
 
 def _ansi(expression: str) -> OssieExpression:
@@ -77,7 +81,7 @@ def _document() -> OssieDocument:
             description="Sum of order amounts",
             custom_extensions=[
                 OssieCustomExtension(
-                    vendor_name="lightdash",
+                    vendor_name="LIGHTDASH",
                     data=json.dumps({"label": "Total amount", "format": "usd"}),
                 )
             ],
@@ -89,7 +93,7 @@ def _document() -> OssieDocument:
             ),
             custom_extensions=[
                 OssieCustomExtension(
-                    vendor_name="lightdash",
+                    vendor_name="LIGHTDASH",
                     data=json.dumps({"format": "percent", "round": 1}),
                 )
             ],
@@ -303,6 +307,46 @@ class TestOssieToLightdash:
             for issue in result.issues
         )
 
+    def test_extension_vendor_name_is_the_registered_token(self):
+        result = LightdashToOssieConverter().convert(
+            {"models": [{"name": "t", "columns": [{"name": "c", "meta": {"dimension": {"format": "usd"}}}]}]},
+            schema="s",
+        )
+        field = result.output.semantic_model[0].datasets[0].fields[0]
+        assert field.custom_extensions[0].vendor_name == "LIGHTDASH"
+        # Documents written before the registration used the lowercase name.
+        legacy = OssieToLightdashConverter().convert(
+            result.output.model_copy(
+                update={
+                    "semantic_model": [
+                        result.output.semantic_model[0].model_copy(
+                            update={
+                                "datasets": [
+                                    result.output.semantic_model[0].datasets[0].model_copy(
+                                        update={
+                                            "fields": [
+                                                field.model_copy(
+                                                    update={
+                                                        "custom_extensions": [
+                                                            OssieCustomExtension(vendor_name="lightdash", data=field.custom_extensions[0].data)
+                                                        ]
+                                                    }
+                                                )
+                                            ]
+                                        }
+                                    )
+                                ]
+                            }
+                        )
+                    ]
+                }
+            )
+        )
+        assert _column(_model(legacy.output, "t"), "c")["meta"]["dimension"]["format"] == "usd"
+        assert not any(
+            issue.issue_type is ConverterIssueType.FOREIGN_EXTENSION_IGNORED for issue in legacy.issues
+        )
+
     def test_extension_cannot_override_structural_keys(self):
         document = _document()
         tampered = document.model_copy(deep=True)
@@ -310,7 +354,7 @@ class TestOssieToLightdash:
             update={
                 "custom_extensions": [
                     OssieCustomExtension(
-                        vendor_name="lightdash",
+                        vendor_name="LIGHTDASH",
                         data=json.dumps(
                             {"label": "Total amount", "sql": "1 + 1", "description": "stale"}
                         ),
@@ -353,7 +397,7 @@ class TestOssieToLightdash:
         metric = tampered.semantic_model[0].metrics[0].model_copy(
             update={
                 "custom_extensions": [
-                    OssieCustomExtension(vendor_name="lightdash", data="{not json")
+                    OssieCustomExtension(vendor_name="LIGHTDASH", data="{not json")
                 ]
             }
         )
@@ -434,7 +478,7 @@ class TestOssieToLightdash:
                 "to_columns": ["customer_id"],
                 "custom_extensions": [
                     {
-                        "vendor_name": "lightdash",
+                        "vendor_name": "LIGHTDASH",
                         "data": json.dumps(
                             {"alias": "buyer", "relationship": "many-to-one", "sql_on": "1 = 1"}
                         ),
@@ -543,7 +587,7 @@ class TestOssieToLightdash:
                         expression=_ansi("SUM(orders.amount)"),
                         custom_extensions=[
                             OssieCustomExtension(
-                                vendor_name="lightdash",
+                                vendor_name="LIGHTDASH",
                                 data=json.dumps({"name": "total_amount", "label": "Total"}),
                             )
                         ],
@@ -572,7 +616,7 @@ class TestOssieToLightdash:
                         expression=_ansi("COUNT(*)"),
                         custom_extensions=[
                             OssieCustomExtension(
-                                vendor_name="lightdash",
+                                vendor_name="LIGHTDASH",
                                 data=json.dumps({"name": "row_count", "model": "customers"}),
                             )
                         ],
@@ -599,7 +643,7 @@ class TestOssieToLightdash:
             update={
                 "custom_extensions": [
                     OssieCustomExtension(
-                        vendor_name="lightdash",
+                        vendor_name="LIGHTDASH",
                         data=json.dumps(
                             {
                                 "sql_filter": "${TABLE}.deleted = false",
@@ -623,7 +667,7 @@ class TestOssieToLightdash:
                         update={
                             "custom_extensions": [
                                 OssieCustomExtension(
-                                    vendor_name="lightdash",
+                                    vendor_name="LIGHTDASH",
                                     data=json.dumps({"column_meta": {"additional_dimensions": {"id_prefix": {"type": "string", "sql": "LEFT(${TABLE}.customer_id, 2)"}}}}),
                                 )
                             ]

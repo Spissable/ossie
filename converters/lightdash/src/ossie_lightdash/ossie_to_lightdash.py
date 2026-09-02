@@ -20,7 +20,7 @@ The output is a dbt ``schema.yml``-shaped dictionary whose ``meta`` blocks
 carry Lightdash dimensions, metrics and joins, ready to be merged into a dbt
 project that Lightdash reads. Lightdash-specific presentation attributes that
 have no Ossie vocabulary round-trip through ``custom_extensions`` entries with
-``vendor_name: "lightdash"``; their keys are overlaid onto the generated
+``vendor_name: LIGHTDASH``; their keys are overlaid onto the generated
 definitions and win for presentation attributes, while structural keys
 (``sql``/``label`` on dimensions, ``sql``/``description`` on metrics,
 ``join``/``sql_on`` on joins) are protected so they can never override the
@@ -54,7 +54,7 @@ from ossie_lightdash.expression_utils import (
     strip_qualifier,
 )
 
-LIGHTDASH_VENDOR_NAME = "lightdash"
+LIGHTDASH_VENDOR_NAME = "LIGHTDASH"
 
 # Structural keys are owned by Ossie vocabulary (the import direction never puts
 # them into the extension); dropping them here keeps a hand-authored extension
@@ -78,7 +78,9 @@ def _lightdash_extension_data(element: Any, issues: List[ConverterIssue]) -> Dic
     """Return the ``lightdash`` vendor extension data of an Ossie element, if any."""
     data: Dict[str, Any] = {}
     for extension in element.custom_extensions or []:
-        if extension.vendor_name == LIGHTDASH_VENDOR_NAME:
+        # The registered token is LIGHTDASH; documents written before the
+        # registration used the lowercase name.
+        if extension.vendor_name.upper() == LIGHTDASH_VENDOR_NAME:
             try:
                 data.update(json.loads(extension.data))
             except (TypeError, ValueError):

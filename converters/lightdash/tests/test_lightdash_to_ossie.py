@@ -115,7 +115,7 @@ SCHEMA_YML = {
 
 def _raw_lightdash_data(element):
     for extension in element.custom_extensions or []:
-        if extension.vendor_name == "lightdash":
+        if extension.vendor_name.upper() == "LIGHTDASH":
             return json.loads(extension.data)
     return {}
 

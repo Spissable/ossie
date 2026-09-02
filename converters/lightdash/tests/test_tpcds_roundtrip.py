@@ -42,7 +42,7 @@ TPCDS_PATH = Path(__file__).parent / ".." / ".." / ".." / "examples" / "tpcds_se
 
 def _lightdash_name(metric) -> str:
     for extension in metric.custom_extensions or []:
-        if extension.vendor_name == "lightdash":
+        if extension.vendor_name.upper() == "LIGHTDASH":
             return json.loads(extension.data)["name"]
     return metric.name
 
