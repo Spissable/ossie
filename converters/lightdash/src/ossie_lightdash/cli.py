@@ -21,6 +21,7 @@ import argparse
 import json
 import sys
 from pathlib import Path
+from typing import List, Optional
 
 import yaml
 
@@ -41,7 +42,7 @@ def _print_issues(issues) -> None:
         print(f"[{issue.issue_type.value}] {issue.element_name}", file=sys.stderr)
 
 
-def main() -> int:
+def main(argv: Optional[List[str]] = None) -> int:
     parser = argparse.ArgumentParser(prog="ossie-lightdash")
     subparsers = parser.add_subparsers(dest="command", required=True)
 
@@ -62,7 +63,7 @@ def main() -> int:
         "--semantic-model-name", default="lightdash_semantic_model"
     )
 
-    args = parser.parse_args()
+    args = parser.parse_args(argv)
 
     if args.command == "export":
         result = OssieToLightdashConverter().convert(_read_document(args.input))
@@ -78,7 +79,7 @@ def main() -> int:
             schema=args.schema,
             semantic_model_name=args.semantic_model_name,
         )
-        document = result.output.model_dump(by_alias=True, exclude_none=True)
+        document = result.output.model_dump(mode="json", by_alias=True, exclude_none=True)
         if args.output.suffix == ".json":
             args.output.write_text(
                 json.dumps(document, indent=2, ensure_ascii=False), encoding="utf-8"
