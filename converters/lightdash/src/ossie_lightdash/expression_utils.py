@@ -254,6 +254,35 @@ def lightdash_sql_to_ossie(
     return result
 
 
+_STRING_LITERAL_RE = re.compile(r"('(?:[^']|'')*')")
+
+
+def qualify_bare_columns(sql: str, dataset: str, columns) -> str:
+    """Prefix bare references to the model's own columns with the dataset name.
+
+    Lightdash lets SQL name a column of the current model without ``${TABLE}``
+    (``SUM(budget_use)``); Ossie consumers need ``dataset.column``. Only
+    identifiers that name one of ``columns`` are touched, never inside string
+    literals, never when already qualified, never when followed by ``(``.
+    """
+    lookup = {column.lower(): column for column in columns}
+    if not lookup:
+        return sql
+    pattern = re.compile(
+        r"(?<![\w.$])(" + "|".join(re.escape(column) for column in lookup) + r")\b(?!\s*\()",
+        re.IGNORECASE,
+    )
+
+    def replace(match: "re.Match[str]") -> str:
+        return f"{dataset}.{match.group(1)}"
+
+    parts = _STRING_LITERAL_RE.split(sql)
+    return "".join(
+        part if index % 2 else pattern.sub(replace, part)
+        for index, part in enumerate(parts)
+    )
+
+
 def referenced_datasets(expression: str, dataset_names: set) -> set:
     """Return which of the given dataset names an Ossie expression references."""
     found = set()

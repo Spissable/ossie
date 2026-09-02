@@ -558,3 +558,33 @@ class TestOssieToLightdash:
             "max_amount": {"type": "max"},
             "min_amount": {"type": "min"},
         }
+
+    def test_unqualified_metric_is_placed_on_the_stashed_model(self):
+        document = _document()
+        tampered = document.model_copy(deep=True)
+        tampered.semantic_model[0] = tampered.semantic_model[0].model_copy(
+            update={
+                "metrics": [
+                    OssieMetric(
+                        name="customers_row_count",
+                        expression=_ansi("COUNT(*)"),
+                        custom_extensions=[
+                            OssieCustomExtension(
+                                vendor_name="lightdash",
+                                data=json.dumps({"name": "row_count", "model": "customers"}),
+                            )
+                        ],
+                    ),
+                    OssieMetric(name="unplaceable", expression=_ansi("COUNT(*)")),
+                ]
+            }
+        )
+        result = OssieToLightdashConverter().convert(tampered)
+        assert _model(result.output, "customers")["meta"]["metrics"] == {
+            "row_count": {"type": "number", "sql": "COUNT(*)"}
+        }
+        assert [
+            issue.element_name
+            for issue in result.issues
+            if issue.issue_type is ConverterIssueType.CROSS_DATASET_METRIC_DROPPED
+        ] == ["unplaceable"]

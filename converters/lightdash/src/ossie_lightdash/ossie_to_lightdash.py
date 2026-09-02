@@ -62,7 +62,7 @@ LIGHTDASH_VENDOR_NAME = "lightdash"
 # metrics whose expression is not a recognised aggregation: it is the channel
 # for types an expression cannot express (``boolean``, ``string``, ...).
 _PROTECTED_DIMENSION_KEYS = {"sql", "label", "ai_hint"}
-_PROTECTED_METRIC_KEYS = {"sql", "description", "ai_hint", "name"}
+_PROTECTED_METRIC_KEYS = {"sql", "description", "ai_hint", "name", "model"}
 _PROTECTED_AGGREGATION_KEYS = _PROTECTED_METRIC_KEYS | {"type", "percentile"}
 _PROTECTED_JOIN_KEYS = {"join", "sql_on", "alias"}
 
@@ -395,6 +395,12 @@ class OssieToLightdashConverter:
         target_dataset = self._resolve_target_dataset(
             expression, dataset_names, references_by_dataset
         )
+        # An expression that names no dataset at all can still be placed when
+        # the stash says which model it came from.
+        stashed_model = extension_data.get("model")
+        if target_dataset is None and stashed_model in dataset_names:
+            if not referenced_datasets(expression, set(dataset_names)):
+                target_dataset = stashed_model
         if target_dataset is None:
             issues.append(
                 ConverterIssue(

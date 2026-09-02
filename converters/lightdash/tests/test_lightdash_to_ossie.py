@@ -132,6 +132,7 @@ def _metric(document, name):
 def _lightdash_data(element):
     data = _raw_lightdash_data(element)
     data.pop("name", None)
+    data.pop("model", None)
     return data
 
 
@@ -593,6 +594,7 @@ class TestLightdashToOssie:
         metric = _metric(result.output, "total_amount")
         assert metric.name == "orders_total_amount"
         assert _raw_lightdash_data(metric)["name"] == "total_amount"
+        assert _raw_lightdash_data(metric)["model"] == "orders"
         assert [m.name for m in result.output.semantic_model[0].metrics][:3] == [
             "orders_total_amount",
             "orders_latest_amount",
@@ -648,3 +650,41 @@ class TestLightdashToOssie:
             for issue in result.issues
             if issue.issue_type is ConverterIssueType.JOIN_TARGET_UNKNOWN
         ] == ["orders -> not_in_this_file"]
+
+    def test_bare_column_names_in_sql_are_qualified(self):
+        schema_yml = {
+            "models": [
+                {
+                    "name": "budgets",
+                    "meta": {
+                        "metrics": {
+                            "use_percentage": {
+                                "type": "number",
+                                "sql": "SUM(budget_use) / NULLIF(SUM(budget_total), 0)",
+                            },
+                            "mobile_share": {
+                                "type": "number",
+                                "sql": "SUM(CASE WHEN device_type = 'device_type' THEN 1 END) / COUNT(*)",
+                            },
+                        }
+                    },
+                    "columns": [
+                        {"name": "budget_use"},
+                        {"name": "budget_total"},
+                        {"name": "device_type"},
+                        {"name": "count", "meta": {"dimension": {"sql": "COUNT(budget_use) OVER ()"}}},
+                    ],
+                }
+            ]
+        }
+        result = LightdashToOssieConverter().convert(schema_yml, schema="marts")
+        assert _metric(result.output, "use_percentage").expression.dialects[0].expression == (
+            "SUM(budgets.budget_use) / NULLIF(SUM(budgets.budget_total), 0)"
+        )
+        # The literal is untouched; the column reference is qualified.
+        assert _metric(result.output, "mobile_share").expression.dialects[0].expression == (
+            "SUM(CASE WHEN budgets.device_type = 'device_type' THEN 1 END) / COUNT(*)"
+        )
+        # A column named like a function is not qualified when called.
+        fields = {f.name: f.expression.dialects[0].expression for f in result.output.semantic_model[0].datasets[0].fields}
+        assert fields["count"] == "COUNT(budgets.budget_use) OVER ()"

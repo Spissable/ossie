@@ -54,13 +54,14 @@ from ossie_lightdash.expression_utils import (
     build_aggregation,
     has_non_portable_reference,
     lightdash_sql_to_ossie,
+    qualify_bare_columns,
 )
 
 LIGHTDASH_VENDOR_NAME = "lightdash"
 
 # Keys that are structurally encoded in Ossie vocabulary and therefore must NOT
 # be duplicated into the extension (a stale copy would win on export).
-_STRUCTURAL_METRIC_KEYS = {"sql", "description", "ai_hint", "name"}
+_STRUCTURAL_METRIC_KEYS = {"sql", "description", "ai_hint", "name", "model"}
 _STRUCTURAL_DIMENSION_KEYS = {"label", "sql", "ai_hint"}
 _STRUCTURAL_JOIN_KEYS = {"join", "sql_on"}
 
@@ -150,6 +151,7 @@ class _ModelContext:
         self.definitions = definitions
         self.issues = issues
         self.column_types: Dict[str, str] = {}
+        self.column_names: List[str] = []
         self._expressions: Dict[str, Optional[str]] = {}
         self._resolving: Set[str] = set()
 
@@ -169,6 +171,9 @@ class _ModelContext:
             self.dataset_name,
             aliases=self.aliases,
             resolve_metric=self.metric_expression,
+        )
+        result.expression = qualify_bare_columns(
+            result.expression, self.dataset_name, self.column_names
         )
         for _ in result.inlined_metrics:
             self.issues.append(
@@ -329,6 +334,7 @@ class LightdashToOssieConverter:
             definitions[metric_name] = (definition, None)
 
         context = _ModelContext(name, aliases, definitions, issues)
+        context.column_names = [column["name"] for column in model.get("columns") or []]
         for column in model.get("columns") or []:
             dimension_meta = lightdash_meta(column).get("dimension") or {}
             if dimension_meta.get("type"):
@@ -451,6 +457,7 @@ class LightdashToOssieConverter:
         # `<model>_<metric>`, and the bare name travels in the extension so
         # export restores it exactly.
         extension_data["name"] = metric_name
+        extension_data["model"] = context.dataset_name
         qualified = f"{context.dataset_name}_{metric_name}"
         ossie_name = _unique_name(qualified, metric_names)
         if ossie_name != qualified:
