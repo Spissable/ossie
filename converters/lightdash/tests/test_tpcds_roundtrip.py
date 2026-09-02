@@ -28,25 +28,25 @@ from pathlib import Path
 
 import yaml
 
-from ossie import OSIDataType, OSIDocument
+from ossie import OssieDataType, OssieDocument
 
 from ossie_lightdash import (
     ConverterIssueType,
-    LightdashToOSIConverter,
-    OSIToLightdashConverter,
+    LightdashToOssieConverter,
+    OssieToLightdashConverter,
 )
 
 TPCDS_PATH = Path(__file__).parent / ".." / ".." / ".." / "examples" / "tpcds_semantic_model.yaml"
 
 
-def _load_tpcds() -> OSIDocument:
-    return OSIDocument.model_validate(yaml.safe_load(TPCDS_PATH.read_text()))
+def _load_tpcds() -> OssieDocument:
+    return OssieDocument.model_validate(yaml.safe_load(TPCDS_PATH.read_text()))
 
 
 def _roundtrip():
     original = _load_tpcds()
-    exported = OSIToLightdashConverter().convert(original)
-    reimported = LightdashToOSIConverter().convert(
+    exported = OssieToLightdashConverter().convert(original)
+    reimported = LightdashToOssieConverter().convert(
         exported.output,
         database="tpcds",
         schema="public",
@@ -89,14 +89,14 @@ class TestTpcdsRoundtrip:
         preserves the category (temporal / numeric / string / boolean) rather
         than the exact member (e.g. Integer comes back as Decimal)."""
         categories = {
-            OSIDataType.STRING: "string",
-            OSIDataType.BOOLEAN: "boolean",
-            OSIDataType.INTEGER: "number",
-            OSIDataType.DECIMAL: "number",
-            OSIDataType.FLOAT: "number",
-            OSIDataType.DATE: "date",
-            OSIDataType.DATE_TIME: "timestamp",
-            OSIDataType.DATE_TIME_TZ: "timestamp",
+            OssieDataType.STRING: "string",
+            OssieDataType.BOOLEAN: "boolean",
+            OssieDataType.INTEGER: "number",
+            OssieDataType.DECIMAL: "number",
+            OssieDataType.FLOAT: "number",
+            OssieDataType.DATE: "date",
+            OssieDataType.DATE_TIME: "timestamp",
+            OssieDataType.DATE_TIME_TZ: "timestamp",
         }
         original, _, reimported = _roundtrip()
         for original_dataset, roundtripped_dataset in zip(

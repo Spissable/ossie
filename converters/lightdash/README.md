@@ -25,9 +25,9 @@ Lightdash reads its semantic layer from dbt `schema.yml` files: dimensions and
 metrics are declared per column (and per model) under `meta`. This converter
 translates between that shape and Ossie.
 
-- **Export** (`osi_to_lightdash`): Ossie document → a dbt `schema.yml`-shaped
+- **Export** (`ossie_to_lightdash`): Ossie document → a dbt `schema.yml`-shaped
   dictionary with Lightdash `meta` blocks, ready to merge into a dbt project.
-- **Import** (`lightdash_to_osi`): a Lightdash-flavoured `schema.yml` → an
+- **Import** (`lightdash_to_ossie`): a Lightdash-flavoured `schema.yml` → an
   Ossie document, as a migration path for teams with an existing installed
   base of Lightdash metrics.
 

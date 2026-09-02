@@ -18,7 +18,7 @@
 """Small expression helpers shared by both conversion directions.
 
 Lightdash SQL snippets reference columns as ``${TABLE}.column`` (and joined
-tables as ``${other_table.column}``); OSI expressions reference them as
+tables as ``${other_table.column}``); Ossie expressions reference them as
 ``dataset.column``. These helpers translate between the two spellings and
 recognise the single-aggregation shapes that map onto Lightdash's typed
 metrics.
@@ -75,7 +75,7 @@ def parse_simple_aggregation(expression: str) -> Optional[Tuple[str, str]]:
 
 
 def build_aggregation(lightdash_type: str, dataset: str, column: str) -> Optional[str]:
-    """Build the OSI expression for a typed Lightdash metric, if it has one."""
+    """Build the Ossie expression for a typed Lightdash metric, if it has one."""
     if lightdash_type == "count_distinct":
         return f"COUNT(DISTINCT {dataset}.{column})"
     agg = _LIGHTDASH_TYPE_TO_AGG.get(lightdash_type)
@@ -106,7 +106,7 @@ def osi_sql_to_lightdash(expression: str, dataset: str) -> str:
 
 
 def lightdash_sql_to_osi(sql: str, dataset: str) -> str:
-    """Rewrite Lightdash column references into OSI ``dataset.column`` references.
+    """Rewrite Lightdash column references into Ossie ``dataset.column`` references.
 
     ``${TABLE}.column`` refers to the current model; ``${other_table.column}``
     refers to a joined model and becomes a cross-dataset reference.
@@ -117,7 +117,7 @@ def lightdash_sql_to_osi(sql: str, dataset: str) -> str:
 
 
 def referenced_datasets(expression: str, dataset_names: set) -> set:
-    """Return which of the given dataset names an OSI expression references."""
+    """Return which of the given dataset names an Ossie expression references."""
     found = set()
     for match in re.finditer(r"([A-Za-z_]\w*)\.\w+", expression):
         if match.group(1) in dataset_names:

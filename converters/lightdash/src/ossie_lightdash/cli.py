@@ -24,16 +24,16 @@ from pathlib import Path
 
 import yaml
 
-from ossie import OSIDocument
-from ossie_lightdash.lightdash_to_osi import LightdashToOSIConverter
-from ossie_lightdash.osi_to_lightdash import OSIToLightdashConverter
+from ossie import OssieDocument
+from ossie_lightdash.lightdash_to_ossie import LightdashToOssieConverter
+from ossie_lightdash.ossie_to_lightdash import OssieToLightdashConverter
 
 
-def _read_document(path: Path) -> OSIDocument:
+def _read_document(path: Path) -> OssieDocument:
     text = path.read_text(encoding="utf-8")
     if path.suffix == ".json":
-        return OSIDocument.model_validate_json(text)
-    return OSIDocument.model_validate(yaml.safe_load(text))
+        return OssieDocument.model_validate_json(text)
+    return OssieDocument.model_validate(yaml.safe_load(text))
 
 
 def _print_issues(issues) -> None:
@@ -65,14 +65,14 @@ def main() -> int:
     args = parser.parse_args()
 
     if args.command == "export":
-        result = OSIToLightdashConverter().convert(_read_document(args.input))
+        result = OssieToLightdashConverter().convert(_read_document(args.input))
         args.output.write_text(
             yaml.safe_dump(result.output, sort_keys=False, allow_unicode=True),
             encoding="utf-8",
         )
     else:
         schema_yml = yaml.safe_load(args.input.read_text(encoding="utf-8"))
-        result = LightdashToOSIConverter().convert(
+        result = LightdashToOssieConverter().convert(
             schema_yml,
             database=args.database,
             schema=args.schema,

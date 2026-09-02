@@ -15,22 +15,22 @@
 # specific language governing permissions and limitations
 # under the License.
 
-"""Convert an OSI document into Lightdash semantic definitions.
+"""Convert an Ossie document into Lightdash semantic definitions.
 
 The output is a dbt ``schema.yml``-shaped dictionary whose ``meta`` blocks
 carry Lightdash dimensions, metrics and joins, ready to be merged into a dbt
 project that Lightdash reads. Lightdash-specific presentation attributes that
-have no OSI vocabulary round-trip through ``custom_extensions`` entries with
+have no Ossie vocabulary round-trip through ``custom_extensions`` entries with
 ``vendor_name: "lightdash"``; their keys are overlaid onto the generated
 definitions and win for presentation attributes, while structural keys
 (``sql``/``label`` on dimensions, ``sql``/``description`` on metrics) are
-protected so they can never override the OSI-derived definition.
+protected so they can never override the Ossie-derived definition.
 """
 
 import json
 from typing import Any, Dict, List, Optional
 
-from ossie import OSIDataset, OSIDialect, OSIDocument, OSIMetric, OSISemanticModel
+from ossie import OssieDataset, OssieDialect, OssieDocument, OssieMetric, OssieSemanticModel
 
 from ossie_lightdash.converter_issues import (
     ConverterIssue,
@@ -48,16 +48,16 @@ from ossie_lightdash.expression_utils import (
 
 LIGHTDASH_VENDOR_NAME = "lightdash"
 
-# Structural keys are owned by OSI vocabulary (the import direction never puts
+# Structural keys are owned by Ossie vocabulary (the import direction never puts
 # them into the extension); dropping them here keeps a hand-authored extension
-# from overriding the OSI-derived definition. ``type`` stays overridable on
-# metrics: it is the documented channel for types OSI expressions cannot
+# from overriding the Ossie-derived definition. ``type`` stays overridable on
+# metrics: it is the documented channel for types Ossie expressions cannot
 # express (e.g. percentile).
 _PROTECTED_DIMENSION_KEYS = {"sql", "label"}
 _PROTECTED_METRIC_KEYS = {"sql", "description"}
 
 
-def _pick_expression(osi_expression: Any, dialect: OSIDialect) -> str:
+def _pick_expression(osi_expression: Any, dialect: OssieDialect) -> str:
     """Return the expression for the preferred dialect (fallback: first available)."""
     for dialect_expression in osi_expression.dialects:
         if dialect_expression.dialect is dialect:
@@ -66,7 +66,7 @@ def _pick_expression(osi_expression: Any, dialect: OSIDialect) -> str:
 
 
 def _lightdash_extension_data(element: Any, issues: List[ConverterIssue]) -> Dict[str, Any]:
-    """Return the ``lightdash`` vendor extension data of an OSI element, if any."""
+    """Return the ``lightdash`` vendor extension data of an Ossie element, if any."""
     data: Dict[str, Any] = {}
     for extension in element.custom_extensions or []:
         if extension.vendor_name == LIGHTDASH_VENDOR_NAME:
@@ -89,18 +89,18 @@ def _lightdash_extension_data(element: Any, issues: List[ConverterIssue]) -> Dic
     return data
 
 
-def _model_name_for(dataset: OSIDataset) -> str:
+def _model_name_for(dataset: OssieDataset) -> str:
     """A Lightdash table is addressed by its dbt model name = the source's table part."""
     return dataset.source.rsplit(".", 1)[-1]
 
 
-class OSIToLightdashConverter:
-    """Converts an OSIDocument into a Lightdash-flavoured dbt schema.yml dict."""
+class OssieToLightdashConverter:
+    """Converts an OssieDocument into a Lightdash-flavoured dbt schema.yml dict."""
 
-    def __init__(self, dialect: OSIDialect = OSIDialect.ANSI_SQL) -> None:
+    def __init__(self, dialect: OssieDialect = OssieDialect.ANSI_SQL) -> None:
         self._dialect = dialect
 
-    def convert(self, document: OSIDocument) -> ConverterResult[Dict[str, Any]]:
+    def convert(self, document: OssieDocument) -> ConverterResult[Dict[str, Any]]:
         issues: List[ConverterIssue] = []
         models: List[Dict[str, Any]] = []
         for semantic_model in document.semantic_model:
@@ -108,7 +108,7 @@ class OSIToLightdashConverter:
         return ConverterResult(output={"version": 2, "models": models}, issues=issues)
 
     def _convert_semantic_model(
-        self, semantic_model: OSISemanticModel, issues: List[ConverterIssue]
+        self, semantic_model: OssieSemanticModel, issues: List[ConverterIssue]
     ) -> List[Dict[str, Any]]:
         datasets = semantic_model.datasets or []
         dataset_names = {dataset.name for dataset in datasets}
@@ -158,7 +158,7 @@ class OSIToLightdashConverter:
         return [models_by_dataset[dataset.name] for dataset in datasets]
 
     def _convert_dataset(
-        self, dataset: OSIDataset, issues: List[ConverterIssue]
+        self, dataset: OssieDataset, issues: List[ConverterIssue]
     ) -> tuple:
         columns_by_name: Dict[str, Dict[str, Any]] = {}
         for field in dataset.fields or []:
@@ -203,7 +203,7 @@ class OSIToLightdashConverter:
                     if key not in _PROTECTED_DIMENSION_KEYS
                 }
             )
-            # An empty dict still marks dimension-ness: a field OSI declares as a
+            # An empty dict still marks dimension-ness: a field Ossie declares as a
             # categorical dimension must not degrade to a plain column on export,
             # or the import direction could not reconstruct it.
             if dimension or field.dimension is not None:
@@ -218,7 +218,7 @@ class OSIToLightdashConverter:
 
     def _convert_metric(
         self,
-        metric: OSIMetric,
+        metric: OssieMetric,
         dataset_names: set,
         models_by_dataset: Dict[str, Dict[str, Any]],
         columns_by_dataset: Dict[str, Dict[str, Dict[str, Any]]],

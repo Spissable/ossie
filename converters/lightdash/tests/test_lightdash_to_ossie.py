@@ -17,9 +17,9 @@
 
 import json
 
-from ossie import OSIDataType
+from ossie import OssieDataType
 
-from ossie_lightdash import ConverterIssueType, LightdashToOSIConverter
+from ossie_lightdash import ConverterIssueType, LightdashToOssieConverter
 
 SCHEMA_YML = {
     "version": 2,
@@ -100,9 +100,9 @@ def _lightdash_data(element):
     return {}
 
 
-class TestLightdashToOSI:
+class TestLightdashToOssie:
     def test_dataset_source_is_qualified(self):
-        result = LightdashToOSIConverter().convert(
+        result = LightdashToOssieConverter().convert(
             SCHEMA_YML, database="analytics_db", schema="marts"
         )
         dataset = result.output.semantic_model[0].datasets[0]
@@ -113,7 +113,7 @@ class TestLightdashToOSI:
         )
 
     def test_missing_schema_is_reported(self):
-        result = LightdashToOSIConverter().convert(SCHEMA_YML)
+        result = LightdashToOssieConverter().convert(SCHEMA_YML)
         dataset = result.output.semantic_model[0].datasets[0]
         assert dataset.source == "orders"
         assert any(
@@ -122,7 +122,7 @@ class TestLightdashToOSI:
         )
 
     def test_time_dimension(self):
-        result = LightdashToOSIConverter().convert(SCHEMA_YML, schema="marts")
+        result = LightdashToOssieConverter().convert(SCHEMA_YML, schema="marts")
         field = result.output.semantic_model[0].datasets[0].fields[0]
         assert field.name == "order_date"
         assert field.label == "Order date"
@@ -130,26 +130,26 @@ class TestLightdashToOSI:
         assert field.dimension is not None
         # The Lightdash type becomes a datatype; `is_time` is an Ossie role
         # marker with no Lightdash source, so it stays unset.
-        assert field.datatype is OSIDataType.DATE
+        assert field.datatype is OssieDataType.DATE
         assert field.dimension.is_time is None
 
     def test_dimension_types_become_datatypes(self):
-        result = LightdashToOSIConverter().convert(SCHEMA_YML, schema="marts")
+        result = LightdashToOssieConverter().convert(SCHEMA_YML, schema="marts")
         by_name = {
             field.name: field
             for field in result.output.semantic_model[0].datasets[0].fields
         }
-        assert by_name["status"].datatype is OSIDataType.STRING
-        assert by_name["order_date"].datatype is OSIDataType.DATE
+        assert by_name["status"].datatype is OssieDataType.STRING
+        assert by_name["order_date"].datatype is OssieDataType.DATE
 
     def test_typed_metric_becomes_aggregation_expression(self):
-        result = LightdashToOSIConverter().convert(SCHEMA_YML, schema="marts")
+        result = LightdashToOssieConverter().convert(SCHEMA_YML, schema="marts")
         metric = _metric(result.output, "total_amount")
         assert metric.expression.dialects[0].expression == "SUM(orders.amount)"
         assert _lightdash_data(metric) == {"label": "Total amount", "format": "usd"}
 
     def test_count_distinct_metric(self):
-        result = LightdashToOSIConverter().convert(SCHEMA_YML, schema="marts")
+        result = LightdashToOssieConverter().convert(SCHEMA_YML, schema="marts")
         metric = _metric(result.output, "unique_customers")
         assert (
             metric.expression.dialects[0].expression
@@ -157,12 +157,12 @@ class TestLightdashToOSI:
         )
 
     def test_percentile_metric_keeps_type_in_extension(self):
-        result = LightdashToOSIConverter().convert(SCHEMA_YML, schema="marts")
+        result = LightdashToOssieConverter().convert(SCHEMA_YML, schema="marts")
         metric = _metric(result.output, "p90_amount")
         assert _lightdash_data(metric) == {"type": "percentile", "percentile": 90}
 
     def test_sql_metric_expression_is_rewritten(self):
-        result = LightdashToOSIConverter().convert(SCHEMA_YML, schema="marts")
+        result = LightdashToOssieConverter().convert(SCHEMA_YML, schema="marts")
         metric = _metric(result.output, "conversion_rate")
         assert (
             metric.expression.dialects[0].expression
@@ -175,7 +175,7 @@ class TestLightdashToOSI:
         }
 
     def test_join_becomes_relationship(self):
-        result = LightdashToOSIConverter().convert(SCHEMA_YML, schema="marts")
+        result = LightdashToOssieConverter().convert(SCHEMA_YML, schema="marts")
         relationship = result.output.semantic_model[0].relationships[0]
         assert relationship.from_dataset == "orders"
         assert relationship.to == "customers"
@@ -200,7 +200,7 @@ class TestLightdashToOSI:
                 }
             ]
         }
-        result = LightdashToOSIConverter().convert(schema_yml, schema="marts")
+        result = LightdashToOssieConverter().convert(schema_yml, schema="marts")
         metric = _metric(result.output, "p90_custom")
         assert (
             metric.expression.dialects[0].expression
@@ -225,7 +225,7 @@ class TestLightdashToOSI:
                 }
             ]
         }
-        result = LightdashToOSIConverter().convert(schema_yml, schema="marts")
+        result = LightdashToOssieConverter().convert(schema_yml, schema="marts")
         metric = _metric(result.output, "orders_per_customer")
         assert (
             metric.expression.dialects[0].expression
@@ -242,7 +242,7 @@ class TestLightdashToOSI:
                 }
             ]
         }
-        result = LightdashToOSIConverter().convert(schema_yml, schema="marts")
+        result = LightdashToOssieConverter().convert(schema_yml, schema="marts")
         assert result.output.semantic_model[0].metrics is None
         assert any(
             issue.issue_type is ConverterIssueType.METRIC_SQL_MISSING
@@ -262,7 +262,7 @@ class TestLightdashToOSI:
                 }
             ]
         }
-        result = LightdashToOSIConverter().convert(schema_yml, schema="marts")
+        result = LightdashToOssieConverter().convert(schema_yml, schema="marts")
         assert result.output.semantic_model[0].relationships is None
         assert any(
             issue.issue_type is ConverterIssueType.JOIN_SQL_UNPARSED

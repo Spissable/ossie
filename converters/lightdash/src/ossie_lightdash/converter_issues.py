@@ -36,14 +36,14 @@ class ConverterIssueType(Enum):
     # Export: a `lightdash` extension whose data is not valid JSON cannot be
     # applied; its presentation attributes are lost.
     EXTENSION_DATA_INVALID = "EXTENSION_DATA_INVALID"
-    # Import: a model-level metric without `sql` has no expressible OSI
+    # Import: a model-level metric without `sql` has no expressible Ossie
     # expression and is skipped.
     METRIC_SQL_MISSING = "METRIC_SQL_MISSING"
     # Export: a field is marked as a time-axis role (`dimension.is_time`) that
     # its datatype does not already imply; Lightdash has no equivalent marker.
     TIME_ROLE_NOT_REPRESENTABLE = "TIME_ROLE_NOT_REPRESENTABLE"
     # Export: a custom extension from another vendor cannot be carried into
-    # Lightdash meta (it remains in the OSI document itself).
+    # Lightdash meta (it remains in the Ossie document itself).
     FOREIGN_EXTENSION_IGNORED = "FOREIGN_EXTENSION_IGNORED"
 
 

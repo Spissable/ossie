@@ -20,13 +20,13 @@ from ossie_lightdash.converter_issues import (
     ConverterIssueType,
     ConverterResult,
 )
-from ossie_lightdash.lightdash_to_osi import LightdashToOSIConverter
-from ossie_lightdash.osi_to_lightdash import OSIToLightdashConverter
+from ossie_lightdash.lightdash_to_ossie import LightdashToOssieConverter
+from ossie_lightdash.ossie_to_lightdash import OssieToLightdashConverter
 
 __all__ = [
     "ConverterIssue",
     "ConverterIssueType",
     "ConverterResult",
-    "LightdashToOSIConverter",
-    "OSIToLightdashConverter",
+    "LightdashToOssieConverter",
+    "OssieToLightdashConverter",
 ]

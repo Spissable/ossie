@@ -15,12 +15,12 @@
 # specific language governing permissions and limitations
 # under the License.
 
-"""Convert Lightdash semantic definitions into an OSI document.
+"""Convert Lightdash semantic definitions into an Ossie document.
 
 The input is a dbt ``schema.yml``-shaped dictionary whose ``meta`` blocks
 carry Lightdash dimensions, metrics and joins. Structural information becomes
-first-class OSI vocabulary (datasets, fields, metrics, relationships);
-Lightdash presentation attributes without OSI vocabulary (``format``,
+first-class Ossie vocabulary (datasets, fields, metrics, relationships);
+Lightdash presentation attributes without Ossie vocabulary (``format``,
 ``round``, ``group_label``, ``hidden``, ...) are preserved in
 ``custom_extensions`` entries with ``vendor_name: "lightdash"`` so that the
 export direction can reproduce them exactly.
@@ -31,17 +31,17 @@ import re
 from typing import Any, Dict, List, Optional, Tuple
 
 from ossie import (
-    OSICustomExtension,
-    OSIDataset,
-    OSIDialect,
-    OSIDialectExpression,
-    OSIDimension,
-    OSIDocument,
-    OSIExpression,
-    OSIField,
-    OSIMetric,
-    OSIRelationship,
-    OSISemanticModel,
+    OssieCustomExtension,
+    OssieDataset,
+    OssieDialect,
+    OssieDialectExpression,
+    OssieDimension,
+    OssieDocument,
+    OssieExpression,
+    OssieField,
+    OssieMetric,
+    OssieRelationship,
+    OssieSemanticModel,
 )
 
 from ossie_lightdash.converter_issues import (
@@ -57,9 +57,9 @@ from ossie_lightdash.expression_utils import (
 
 LIGHTDASH_VENDOR_NAME = "lightdash"
 
-# Keys that are structurally encoded in OSI vocabulary and therefore must NOT
+# Keys that are structurally encoded in Ossie vocabulary and therefore must NOT
 # be duplicated into the extension (a stale copy would win on export).
-# ``type`` stays in the extension only for metric types whose semantics OSI
+# ``type`` stays in the extension only for metric types whose semantics Ossie
 # expressions cannot express faithfully (currently ``percentile``).
 _STRUCTURAL_METRIC_KEYS = {"sql", "description"}
 _STRUCTURAL_DIMENSION_KEYS = {"label", "sql"}
@@ -69,16 +69,16 @@ _JOIN_PAIR_RE = re.compile(
 )
 
 
-def _ansi(expression: str) -> OSIExpression:
-    return OSIExpression(
+def _ansi(expression: str) -> OssieExpression:
+    return OssieExpression(
         dialects=[
-            OSIDialectExpression(dialect=OSIDialect.ANSI_SQL, expression=expression)
+            OssieDialectExpression(dialect=OssieDialect.ANSI_SQL, expression=expression)
         ]
     )
 
 
 def _type_needs_extension(lightdash_type: str) -> bool:
-    """True for metric types an OSI expression cannot encode faithfully.
+    """True for metric types an Ossie expression cannot encode faithfully.
 
     ``number`` is fully described by its SQL and typed aggregations are
     recovered by parsing the expression, so only the remaining types
@@ -89,19 +89,19 @@ def _type_needs_extension(lightdash_type: str) -> bool:
     return build_aggregation(lightdash_type, "_", "_") is None
 
 
-def _lightdash_extension(data: Dict[str, Any]) -> List[OSICustomExtension]:
+def _lightdash_extension(data: Dict[str, Any]) -> List[OssieCustomExtension]:
     if not data:
         return []
     return [
-        OSICustomExtension(
+        OssieCustomExtension(
             vendor_name=LIGHTDASH_VENDOR_NAME,
             data=json.dumps(data, ensure_ascii=False, sort_keys=True),
         )
     ]
 
 
-class LightdashToOSIConverter:
-    """Converts a Lightdash-flavoured dbt schema.yml dict into an OSIDocument."""
+class LightdashToOssieConverter:
+    """Converts a Lightdash-flavoured dbt schema.yml dict into an OssieDocument."""
 
     def convert(
         self,
@@ -110,11 +110,11 @@ class LightdashToOSIConverter:
         database: Optional[str] = None,
         schema: Optional[str] = None,
         semantic_model_name: str = "lightdash_semantic_model",
-    ) -> ConverterResult[OSIDocument]:
+    ) -> ConverterResult[OssieDocument]:
         issues: List[ConverterIssue] = []
-        datasets: List[OSIDataset] = []
-        metrics: List[OSIMetric] = []
-        relationships: List[OSIRelationship] = []
+        datasets: List[OssieDataset] = []
+        metrics: List[OssieMetric] = []
+        relationships: List[OssieRelationship] = []
 
         for model in schema_yml.get("models") or []:
             dataset, model_metrics, model_relationships = self._convert_model(
@@ -124,10 +124,10 @@ class LightdashToOSIConverter:
             metrics.extend(model_metrics)
             relationships.extend(model_relationships)
 
-        document = OSIDocument(
+        document = OssieDocument(
             version="0.2.0.dev0",
             semantic_model=[
-                OSISemanticModel(
+                OssieSemanticModel(
                     name=semantic_model_name,
                     datasets=datasets,
                     metrics=metrics or None,
@@ -144,7 +144,7 @@ class LightdashToOSIConverter:
         database: Optional[str],
         schema: Optional[str],
         issues: List[ConverterIssue],
-    ) -> Tuple[OSIDataset, List[OSIMetric], List[OSIRelationship]]:
+    ) -> Tuple[OssieDataset, List[OssieMetric], List[OssieRelationship]]:
         name = model["name"]
         source = ".".join(part for part in [database, schema, name] if part)
         if schema is None:
@@ -155,8 +155,8 @@ class LightdashToOSIConverter:
                 )
             )
 
-        fields: List[OSIField] = []
-        metrics: List[OSIMetric] = []
+        fields: List[OssieField] = []
+        metrics: List[OssieMetric] = []
         for column in model.get("columns") or []:
             field, column_metrics = self._convert_column(column, dataset_name=name)
             fields.append(field)
@@ -180,7 +180,7 @@ class LightdashToOSIConverter:
             model_meta.get("joins") or [], from_model=name, issues=issues
         )
 
-        dataset = OSIDataset(
+        dataset = OssieDataset(
             name=name,
             source=source,
             description=model.get("description"),
@@ -190,13 +190,13 @@ class LightdashToOSIConverter:
 
     def _convert_column(
         self, column: Dict[str, Any], *, dataset_name: str
-    ) -> Tuple[OSIField, List[OSIMetric]]:
+    ) -> Tuple[OssieField, List[OssieMetric]]:
         column_name = column["name"]
         meta = column.get("meta") or {}
         dimension_meta = meta.get("dimension")
 
         expression = column_name
-        dimension: Optional[OSIDimension] = None
+        dimension: Optional[OssieDimension] = None
         datatype = None
         label: Optional[str] = None
         extension_data: Dict[str, Any] = {}
@@ -208,14 +208,14 @@ class LightdashToOSIConverter:
             # `is_time` is a role marker in Ossie, not a type: Lightdash has no
             # equivalent, so it is left unset rather than inferred from the type
             # (the type itself is carried by `datatype`).
-            dimension = OSIDimension()
+            dimension = OssieDimension()
             extension_data = {
                 key: value
                 for key, value in dimension_meta.items()
                 if key not in _STRUCTURAL_DIMENSION_KEYS
             }
 
-        field = OSIField(
+        field = OssieField(
             name=column_name,
             expression=_ansi(expression),
             dimension=dimension,
@@ -240,7 +240,7 @@ class LightdashToOSIConverter:
         *,
         dataset_name: str,
         column: str,
-    ) -> OSIMetric:
+    ) -> OssieMetric:
         lightdash_type = definition.get("type", "number")
         expression = build_aggregation(lightdash_type, dataset_name, column)
         if expression is None:
@@ -259,7 +259,7 @@ class LightdashToOSIConverter:
 
     def _convert_sql_metric(
         self, metric_name: str, definition: Dict[str, Any], *, dataset_name: str
-    ) -> OSIMetric:
+    ) -> OssieMetric:
         expression = lightdash_sql_to_osi(definition["sql"], dataset_name)
         return self._build_metric(
             metric_name,
@@ -275,14 +275,14 @@ class LightdashToOSIConverter:
         *,
         expression: str,
         keep_type_in_extension: bool,
-    ) -> OSIMetric:
+    ) -> OssieMetric:
         excluded = set(_STRUCTURAL_METRIC_KEYS)
         if not keep_type_in_extension:
             excluded.add("type")
         extension_data = {
             key: value for key, value in definition.items() if key not in excluded
         }
-        return OSIMetric(
+        return OssieMetric(
             name=metric_name,
             expression=_ansi(expression),
             description=definition.get("description"),
@@ -295,8 +295,8 @@ class LightdashToOSIConverter:
         *,
         from_model: str,
         issues: List[ConverterIssue],
-    ) -> List[OSIRelationship]:
-        relationships: List[OSIRelationship] = []
+    ) -> List[OssieRelationship]:
+        relationships: List[OssieRelationship] = []
         for join in joins:
             to_model = join.get("join")
             pairs = _JOIN_PAIR_RE.findall(join.get("sql_on") or "")
@@ -318,7 +318,7 @@ class LightdashToOSIConverter:
                 )
                 continue
             relationships.append(
-                OSIRelationship.model_validate(
+                OssieRelationship.model_validate(
                     {
                         "name": f"{from_model}_to_{to_model}",
                         "from": from_model,

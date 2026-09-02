@@ -26,51 +26,51 @@ always its exact member (e.g. ``Integer`` comes back as ``Decimal``).
 
 from typing import Optional
 
-from ossie import OSIDataType
+from ossie import OssieDataType
 
 # Ossie datatype -> Lightdash dimension type.
 _DATATYPE_TO_LIGHTDASH = {
-    OSIDataType.STRING: "string",
-    OSIDataType.INTEGER: "number",
-    OSIDataType.DECIMAL: "number",
-    OSIDataType.FLOAT: "number",
-    OSIDataType.BOOLEAN: "boolean",
-    OSIDataType.DATE: "date",
-    OSIDataType.DATE_TIME: "timestamp",
-    OSIDataType.DATE_TIME_TZ: "timestamp",
+    OssieDataType.STRING: "string",
+    OssieDataType.INTEGER: "number",
+    OssieDataType.DECIMAL: "number",
+    OssieDataType.FLOAT: "number",
+    OssieDataType.BOOLEAN: "boolean",
+    OssieDataType.DATE: "date",
+    OssieDataType.DATE_TIME: "timestamp",
+    OssieDataType.DATE_TIME_TZ: "timestamp",
     # Lightdash has no time-of-day dimension type; a string keeps the value
     # visible rather than dropping the column.
-    OSIDataType.TIME: "string",
-    OSIDataType.OPAQUE: "string",
+    OssieDataType.TIME: "string",
+    OssieDataType.OPAQUE: "string",
 }
 
 # Lightdash dimension type -> Ossie datatype. Numeric widths are not expressed
 # in Lightdash, so `number` maps to the widest exact type.
 _LIGHTDASH_TO_DATATYPE = {
-    "string": OSIDataType.STRING,
-    "number": OSIDataType.DECIMAL,
-    "boolean": OSIDataType.BOOLEAN,
-    "date": OSIDataType.DATE,
-    "timestamp": OSIDataType.DATE_TIME,
+    "string": OssieDataType.STRING,
+    "number": OssieDataType.DECIMAL,
+    "boolean": OssieDataType.BOOLEAN,
+    "date": OssieDataType.DATE,
+    "timestamp": OssieDataType.DATE_TIME,
 }
 
-_TEMPORAL = {OSIDataType.DATE, OSIDataType.TIME, OSIDataType.DATE_TIME, OSIDataType.DATE_TIME_TZ}
+_TEMPORAL = {OssieDataType.DATE, OssieDataType.TIME, OssieDataType.DATE_TIME, OssieDataType.DATE_TIME_TZ}
 
 
-def datatype_to_lightdash_type(datatype: Optional[OSIDataType]) -> Optional[str]:
+def datatype_to_lightdash_type(datatype: Optional[OssieDataType]) -> Optional[str]:
     """Return the Lightdash dimension type for an Ossie datatype, if any."""
     if datatype is None:
         return None
     return _DATATYPE_TO_LIGHTDASH.get(datatype)
 
 
-def lightdash_type_to_datatype(lightdash_type: Optional[str]) -> Optional[OSIDataType]:
+def lightdash_type_to_datatype(lightdash_type: Optional[str]) -> Optional[OssieDataType]:
     """Return the Ossie datatype for a Lightdash dimension type, if any."""
     if lightdash_type is None:
         return None
     return _LIGHTDASH_TO_DATATYPE.get(lightdash_type)
 
 
-def is_temporal(datatype: Optional[OSIDataType]) -> bool:
+def is_temporal(datatype: Optional[OssieDataType]) -> bool:
     """True when the datatype represents a point in time."""
     return datatype in _TEMPORAL

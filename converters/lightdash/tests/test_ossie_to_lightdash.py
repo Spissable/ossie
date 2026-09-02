@@ -18,94 +18,94 @@
 import json
 
 from ossie import (
-    OSICustomExtension,
-    OSIDataset,
-    OSIDialect,
-    OSIDialectExpression,
-    OSIDimension,
-    OSIDocument,
-    OSIExpression,
-    OSIField,
-    OSIMetric,
-    OSIRelationship,
-    OSISemanticModel,
+    OssieCustomExtension,
+    OssieDataset,
+    OssieDialect,
+    OssieDialectExpression,
+    OssieDimension,
+    OssieDocument,
+    OssieExpression,
+    OssieField,
+    OssieMetric,
+    OssieRelationship,
+    OssieSemanticModel,
 )
 
-from ossie_lightdash import ConverterIssueType, OSIToLightdashConverter
+from ossie_lightdash import ConverterIssueType, OssieToLightdashConverter
 
 
-def _ansi(expression: str) -> OSIExpression:
-    return OSIExpression(
+def _ansi(expression: str) -> OssieExpression:
+    return OssieExpression(
         dialects=[
-            OSIDialectExpression(dialect=OSIDialect.ANSI_SQL, expression=expression)
+            OssieDialectExpression(dialect=OssieDialect.ANSI_SQL, expression=expression)
         ]
     )
 
 
-def _document() -> OSIDocument:
-    orders = OSIDataset(
+def _document() -> OssieDocument:
+    orders = OssieDataset(
         name="orders",
         source="analytics_db.marts.orders",
         description="One row per order",
         fields=[
-            OSIField(
+            OssieField(
                 name="order_date",
                 expression=_ansi("order_date"),
-                dimension=OSIDimension(is_time=True),
+                dimension=OssieDimension(is_time=True),
                 label="Order date",
             ),
-            OSIField(
+            OssieField(
                 name="status",
                 expression=_ansi("status"),
-                dimension=OSIDimension(is_time=False),
+                dimension=OssieDimension(is_time=False),
             ),
-            OSIField(name="amount", expression=_ansi("amount")),
-            OSIField(name="customer_id", expression=_ansi("customer_id")),
+            OssieField(name="amount", expression=_ansi("amount")),
+            OssieField(name="customer_id", expression=_ansi("customer_id")),
         ],
     )
-    customers = OSIDataset(
+    customers = OssieDataset(
         name="customers",
         source="analytics_db.marts.customers",
-        fields=[OSIField(name="customer_id", expression=_ansi("customer_id"))],
+        fields=[OssieField(name="customer_id", expression=_ansi("customer_id"))],
     )
     metrics = [
-        OSIMetric(
+        OssieMetric(
             name="total_amount",
             expression=_ansi("SUM(orders.amount)"),
             description="Sum of order amounts",
             custom_extensions=[
-                OSICustomExtension(
+                OssieCustomExtension(
                     vendor_name="lightdash",
                     data=json.dumps({"label": "Total amount", "format": "usd"}),
                 )
             ],
         ),
-        OSIMetric(
+        OssieMetric(
             name="conversion_rate",
             expression=_ansi(
                 "SUM(orders.completed_count) / NULLIF(SUM(orders.total_count), 0)"
             ),
             custom_extensions=[
-                OSICustomExtension(
+                OssieCustomExtension(
                     vendor_name="lightdash",
                     data=json.dumps({"format": "percent", "round": 1}),
                 )
             ],
         ),
-        OSIMetric(
+        OssieMetric(
             name="cross_dataset",
             expression=_ansi("SUM(orders.amount) / COUNT(customers.customer_id)"),
         ),
-        OSIMetric(
+        OssieMetric(
             name="foreign_vendor_metric",
             expression=_ansi("SUM(orders.amount)"),
             custom_extensions=[
-                OSICustomExtension(vendor_name="somebi", data='{"x": 1}')
+                OssieCustomExtension(vendor_name="somebi", data='{"x": 1}')
             ],
         ),
     ]
     relationships = [
-        OSIRelationship.model_validate(
+        OssieRelationship.model_validate(
             {
                 "name": "orders_to_customers",
                 "from": "orders",
@@ -115,10 +115,10 @@ def _document() -> OSIDocument:
             }
         )
     ]
-    return OSIDocument(
+    return OssieDocument(
         version="0.2.0.dev0",
         semantic_model=[
-            OSISemanticModel(
+            OssieSemanticModel(
                 name="sales",
                 datasets=[orders, customers],
                 metrics=metrics,
@@ -136,24 +136,24 @@ def _column(model, name):
     return next(c for c in model["columns"] if c["name"] == name)
 
 
-class TestOSIToLightdash:
+class TestOssieToLightdash:
     def test_time_dimension_exports_date_type(self):
-        result = OSIToLightdashConverter().convert(_document())
+        result = OssieToLightdashConverter().convert(_document())
         column = _column(_model(result.output, "orders"), "order_date")
         assert column["meta"]["dimension"] == {"label": "Order date", "type": "date"}
 
     def test_categorical_dimension_keeps_dimension_marker(self):
-        result = OSIToLightdashConverter().convert(_document())
+        result = OssieToLightdashConverter().convert(_document())
         column = _column(_model(result.output, "orders"), "status")
         assert column["meta"]["dimension"] == {}
 
     def test_plain_field_has_no_dimension_meta(self):
-        result = OSIToLightdashConverter().convert(_document())
+        result = OssieToLightdashConverter().convert(_document())
         column = _column(_model(result.output, "orders"), "amount")
         assert "dimension" not in column.get("meta", {})
 
     def test_simple_aggregation_becomes_column_metric(self):
-        result = OSIToLightdashConverter().convert(_document())
+        result = OssieToLightdashConverter().convert(_document())
         column = _column(_model(result.output, "orders"), "amount")
         metric = column["meta"]["metrics"]["total_amount"]
         assert metric["type"] == "sum"
@@ -163,7 +163,7 @@ class TestOSIToLightdash:
         assert "sql" not in metric
 
     def test_complex_expression_becomes_model_metric(self):
-        result = OSIToLightdashConverter().convert(_document())
+        result = OssieToLightdashConverter().convert(_document())
         metric = _model(result.output, "orders")["meta"]["metrics"]["conversion_rate"]
         assert metric["type"] == "number"
         assert (
@@ -174,7 +174,7 @@ class TestOSIToLightdash:
         assert metric["round"] == 1
 
     def test_cross_dataset_metric_is_dropped_with_issue(self):
-        result = OSIToLightdashConverter().convert(_document())
+        result = OssieToLightdashConverter().convert(_document())
         assert any(
             issue.issue_type is ConverterIssueType.CROSS_DATASET_METRIC_DROPPED
             and issue.element_name == "cross_dataset"
@@ -182,7 +182,7 @@ class TestOSIToLightdash:
         )
 
     def test_foreign_extension_is_reported(self):
-        result = OSIToLightdashConverter().convert(_document())
+        result = OssieToLightdashConverter().convert(_document())
         assert any(
             issue.issue_type is ConverterIssueType.FOREIGN_EXTENSION_IGNORED
             and issue.element_name == "foreign_vendor_metric"
@@ -195,7 +195,7 @@ class TestOSIToLightdash:
         metric = tampered.semantic_model[0].metrics[0].model_copy(
             update={
                 "custom_extensions": [
-                    OSICustomExtension(
+                    OssieCustomExtension(
                         vendor_name="lightdash",
                         data=json.dumps(
                             {"label": "Total amount", "sql": "1 + 1", "description": "stale"}
@@ -205,7 +205,7 @@ class TestOSIToLightdash:
             }
         )
         tampered.semantic_model[0].metrics[0] = metric
-        result = OSIToLightdashConverter().convert(tampered)
+        result = OssieToLightdashConverter().convert(tampered)
         column = _column(_model(result.output, "orders"), "amount")
         exported = column["meta"]["metrics"]["total_amount"]
         assert exported["label"] == "Total amount"
@@ -215,7 +215,7 @@ class TestOSIToLightdash:
     def test_mismatched_relationship_columns_are_skipped(self):
         document = _document()
         tampered = document.model_copy(deep=True)
-        relationship = OSIRelationship.model_validate(
+        relationship = OssieRelationship.model_validate(
             {
                 "name": "broken",
                 "from": "orders",
@@ -225,7 +225,7 @@ class TestOSIToLightdash:
             }
         )
         tampered.semantic_model[0].relationships[0] = relationship
-        result = OSIToLightdashConverter().convert(tampered)
+        result = OssieToLightdashConverter().convert(tampered)
         assert "joins" not in _model(result.output, "orders").get("meta", {})
         assert any(
             issue.issue_type is ConverterIssueType.RELATIONSHIP_COLUMNS_MISMATCHED
@@ -239,12 +239,12 @@ class TestOSIToLightdash:
         metric = tampered.semantic_model[0].metrics[0].model_copy(
             update={
                 "custom_extensions": [
-                    OSICustomExtension(vendor_name="lightdash", data="{not json")
+                    OssieCustomExtension(vendor_name="lightdash", data="{not json")
                 ]
             }
         )
         tampered.semantic_model[0].metrics[0] = metric
-        result = OSIToLightdashConverter().convert(tampered)
+        result = OssieToLightdashConverter().convert(tampered)
         assert any(
             issue.issue_type is ConverterIssueType.EXTENSION_DATA_INVALID
             and issue.element_name == "total_amount"
@@ -252,7 +252,7 @@ class TestOSIToLightdash:
         )
 
     def test_relationship_becomes_join(self):
-        result = OSIToLightdashConverter().convert(_document())
+        result = OssieToLightdashConverter().convert(_document())
         joins = _model(result.output, "orders")["meta"]["joins"]
         assert joins == [
             {
