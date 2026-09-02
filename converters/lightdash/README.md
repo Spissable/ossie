@@ -38,6 +38,20 @@ Lightdash-only attributes travel in `custom_extensions` under the registered
 vendor token `LIGHTDASH`, so Lightdash → Ossie → Lightdash restores the
 project exactly while every other consumer works from the core vocabulary.
 
+## Installation
+
+The core `apache-ossie` package is not on PyPI yet, so install both from git
+(no checkout needed; `pipx` works the same way):
+
+```bash
+pip install "apache-ossie @ git+https://github.com/apache/ossie@main#subdirectory=python"
+pip install "apache-ossie-lightdash @ git+https://github.com/apache/ossie@main#subdirectory=converters/lightdash"
+```
+
+From a checkout of this directory, `uv sync` (or `pip install -e .`) does the
+same and picks up the in-repo core package. Once both packages are published,
+`pip install apache-ossie-lightdash` is all that is needed. Python 3.11+.
+
 ## Usage
 
 ```
@@ -90,8 +104,6 @@ models.output    # [{"type": "model", "name": ..., "sql_from": ..., "dimensions"
 exported = OssieToLightdashConverter(OssieDialect.BIGQUERY).convert(document)
 exported.output  # {"version": 2, "models": [...]}  (dbt-meta flavour)
 ```
-
-Requires Python 3.11+ and the in-repo `apache-ossie` package (`../../python`).
 
 ## Mapping
 
