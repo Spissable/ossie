@@ -67,10 +67,19 @@ def test_export_writes_a_lightdash_project(tmp_path, capsys):
     config = yaml.safe_load((project / "lightdash.config.yml").read_text())
     assert config["warehouse"] == {"type": "bigquery"}
     assert config["name"] == "tpcds_retail_model"
-    # A second export leaves an existing config alone.
+    # A config that someone has given a real warehouse type is kept ...
     (project / "lightdash.config.yml").write_text("name: mine\nversion: '1.0'\nwarehouse:\n  type: postgres\n")
     assert main(["export", str(TPCDS_PATH), str(project)]) == 0
     assert yaml.safe_load((project / "lightdash.config.yml").read_text())["name"] == "mine"
+
+
+def test_placeholder_config_is_replaced_on_the_next_run(tmp_path):
+    project = tmp_path / "project"
+    # ... but the placeholder we wrote ourselves is not.
+    assert main(["export", "-i", str(TPCDS_PATH), "-o", str(project)]) == 0
+    assert yaml.safe_load((project / "lightdash.config.yml").read_text())["warehouse"] == {"type": "CHANGE_ME"}
+    assert main(["export", "-i", str(TPCDS_PATH), "-o", str(project), "--dialect", "BIGQUERY"]) == 0
+    assert yaml.safe_load((project / "lightdash.config.yml").read_text())["warehouse"] == {"type": "bigquery"}
 
 
 def test_export_dbt_meta_still_writes_one_schema_file(tmp_path):

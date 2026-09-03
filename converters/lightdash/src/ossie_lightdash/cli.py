@@ -48,6 +48,24 @@ _WAREHOUSE_BY_DIALECT = {
 }
 
 
+_PLACEHOLDER = "CHANGE_ME"
+
+
+def _existing_warehouse_type(config: Path) -> Optional[str]:
+    """warehouse.type of an existing config; None when there is no config or
+    no readable type in it."""
+    if not config.exists():
+        return None
+    try:
+        document = yaml.safe_load(config.read_text(encoding="utf-8")) or {}
+    except yaml.YAMLError:
+        return None
+    warehouse = document.get("warehouse") if isinstance(document, dict) else None
+    if isinstance(warehouse, dict) and isinstance(warehouse.get("type"), str):
+        return warehouse["type"]
+    return None
+
+
 def _write_lightdash_project(
     models, output: Path, *, name: str, warehouse: Optional[str]
 ) -> None:
@@ -62,25 +80,31 @@ def _write_lightdash_project(
         (models_dir / f"{model['name']}.yml").write_text(
             yaml.safe_dump(model, sort_keys=False, allow_unicode=True), encoding="utf-8"
         )
+    # The config is rewritten while it still carries the placeholder and kept
+    # once a real warehouse type is in it, whether we or the user put it there.
     config = output / "lightdash.config.yml"
-    if not config.exists():
-        config.write_text(
-            yaml.safe_dump(
-                {
-                    "name": name,
-                    "version": "1.0",
-                    "warehouse": {"type": warehouse or "CHANGE_ME"},
-                },
-                sort_keys=False,
-            ),
-            encoding="utf-8",
+    existing = _existing_warehouse_type(config)
+    if existing is not None and existing != _PLACEHOLDER:
+        print(f"{config}: kept (warehouse.type is {existing}).", file=sys.stderr)
+        return
+    config.write_text(
+        yaml.safe_dump(
+            {
+                "name": name,
+                "version": "1.0",
+                "warehouse": {"type": warehouse or _PLACEHOLDER},
+            },
+            sort_keys=False,
+        ),
+        encoding="utf-8",
+    )
+    if warehouse is None:
+        print(
+            f"{config}: warehouse.type is {_PLACEHOLDER}; pass --warehouse, or a "
+            "--dialect Lightdash knows (BIGQUERY, SNOWFLAKE, DATABRICKS), and "
+            "re-run. lightdash compile will refuse the placeholder.",
+            file=sys.stderr,
         )
-        if warehouse is None:
-            print(
-                "lightdash.config.yml: set warehouse.type (pass --warehouse, or a "
-                "--dialect Lightdash knows: BIGQUERY, SNOWFLAKE, DATABRICKS)",
-                file=sys.stderr,
-            )
 
 
 def _add_io_arguments(parser: argparse.ArgumentParser, input_help: str, output_help: str) -> None:
