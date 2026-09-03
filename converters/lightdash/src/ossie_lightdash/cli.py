@@ -122,6 +122,8 @@ def _resolve_io(parser: argparse.ArgumentParser, args: argparse.Namespace) -> No
     args.output = args.output_flag or args.output
     if args.input is None or args.output is None:
         parser.error("both --input and --output are required")
+    if not args.input.exists():
+        parser.error(f"input not found: {args.input}")
 
 
 _SHOWN_PER_TYPE = 8

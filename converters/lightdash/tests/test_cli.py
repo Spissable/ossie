@@ -149,3 +149,8 @@ def test_issues_are_grouped_by_type_unless_verbose(tmp_path, capsys):
     verbose = capsys.readouterr().err.splitlines()
     assert verbose[2] == "    m0, m1, m2, m3, m4, m5, m6, m7, m8, m9, m10"
     assert "... and" not in "\n".join(verbose)
+
+def test_missing_input_is_an_error(tmp_path, capsys):
+    with pytest.raises(SystemExit):
+        main(["import", "-i", str(tmp_path / "nope"), "-o", str(tmp_path / "out.yaml")])
+    assert "input not found" in capsys.readouterr().err
