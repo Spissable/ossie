@@ -14,11 +14,13 @@
 # KIND, either express or implied.  See the License for the
 # specific language governing permissions and limitations
 # under the License.
-"""Read Lightdash-flavoured dbt schema definitions from a file or a project.
+"""Read Lightdash definitions from a file or a project directory.
 
-dbt lets a project spread its ``models:`` and ``seeds:`` entries over any
-number of YAML files, so ``import`` accepts a directory as well as a single
-schema file and merges everything it finds.
+Two shapes are understood and merged: dbt schema files (``models:`` /
+``seeds:`` lists with Lightdash ``meta``) and Lightdash's own dbt-free model
+files (``type: model``, ``sql_from``, a ``dimensions:`` list). The latter are
+folded into the dbt shape, with ``sql_from`` kept as the model's source, so
+the converter has one input model.
 """
 
 from pathlib import Path
@@ -26,8 +28,53 @@ from typing import Any, Dict, List, Tuple
 
 import yaml
 
+_MODEL_FILE_TYPES = {"model", "model/v1beta", "model/v1"}
+_DIMENSION_OWN_KEYS = {"name", "description", "metrics", "additional_dimensions"}
+_MODEL_OWN_KEYS = {"type", "name", "description", "dimensions"}
+
 # Directories dbt or Python tooling generate; nothing in them is authored schema.
 _SKIPPED_DIRS = {"target", "dbt_packages", "logs", ".git", "node_modules", "env", "venv", ".venv", "site-packages", "__pycache__"}
+
+
+def is_model_file(document: Any) -> bool:
+    """True for a Lightdash dbt-free model file (``type: model`` + dimensions)."""
+    return (
+        isinstance(document, dict)
+        and document.get("type") in _MODEL_FILE_TYPES
+        and isinstance(document.get("name"), str)
+        and isinstance(document.get("dimensions"), list)
+    )
+
+
+def model_file_to_dbt_model(document: Dict[str, Any]) -> Dict[str, Any]:
+    """Fold a Lightdash model file into the dbt model shape the converter reads.
+
+    Dimensions become columns whose ``meta.dimension`` carries everything but
+    the column-level keys; ``metrics`` and ``additional_dimensions`` stay at
+    column level; every other top-level key (``sql_from``, ``joins``,
+    ``metrics``, ``primary_key``, ``sql_filter``, ...) becomes model meta.
+    """
+    columns: List[Dict[str, Any]] = []
+    for dimension in document["dimensions"]:
+        if not isinstance(dimension, dict) or "name" not in dimension:
+            continue
+        column: Dict[str, Any] = {"name": dimension["name"]}
+        if dimension.get("description"):
+            column["description"] = dimension["description"]
+        meta: Dict[str, Any] = {
+            "dimension": {k: v for k, v in dimension.items() if k not in _DIMENSION_OWN_KEYS}
+        }
+        for key in ("metrics", "additional_dimensions"):
+            if dimension.get(key):
+                meta[key] = dimension[key]
+        column["meta"] = meta
+        columns.append(column)
+    model: Dict[str, Any] = {"name": document["name"]}
+    if document.get("description"):
+        model["description"] = document["description"]
+    model["meta"] = {k: v for k, v in document.items() if k not in _MODEL_OWN_KEYS}
+    model["columns"] = columns
+    return model
 
 
 def load_schema(path: Path) -> Dict[str, Any]:
@@ -46,7 +93,10 @@ def load_schema_with_skips(path: Path) -> Tuple[Dict[str, Any], List[Path]]:
     is skipped by that rule), and generated directories are ignored.
     """
     if path.is_file():
-        return yaml.safe_load(path.read_text(encoding="utf-8")) or {}, []
+        document = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
+        if is_model_file(document):
+            return {"version": 2, "models": [model_file_to_dbt_model(document)]}, []
+        return document, []
 
     models: List[Dict[str, Any]] = []
     seeds: List[Dict[str, Any]] = []
@@ -62,6 +112,9 @@ def load_schema_with_skips(path: Path) -> Tuple[Dict[str, Any], List[Path]]:
             skipped.append(file)
             continue
         if not isinstance(document, dict):
+            continue
+        if is_model_file(document):
+            models.append(model_file_to_dbt_model(document))
             continue
         if isinstance(document.get("models"), list):
             models.extend(document["models"])

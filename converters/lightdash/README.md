@@ -30,9 +30,10 @@ translates between that shape and Ossie.
   `sql_from`, typed dimensions), which `lightdash deploy` reads as they are;
   `--format dbt-meta` produces one dbt `schema.yml` with Lightdash `meta`
   blocks instead, for projects that keep their definitions in dbt.
-- **Import** (`lightdash_to_ossie`): a Lightdash-flavoured dbt `schema.yml` →
-  an Ossie document, for teams adopting Ossie as the source of truth for
-  definitions they already maintain in Lightdash.
+- **Import** (`lightdash_to_ossie`): a Lightdash project → an Ossie document,
+  for teams adopting Ossie as the source of truth for definitions they already
+  maintain in Lightdash. Both Lightdash shapes are read: dbt `schema.yml`
+  files with Lightdash `meta`, and Lightdash's own dbt-free model files.
 
 Lightdash-only attributes travel in `custom_extensions` under the registered
 vendor token `LIGHTDASH`, so Lightdash → Ossie → Lightdash restores the
@@ -150,11 +151,15 @@ dialect with a `DIALECT_UNAVAILABLE` issue when an expression offers neither.
 
 ## Input shape
 
-`import` reads the `models:` and `seeds:` entries of a dbt schema file (seeds
-are tables to Lightdash too), or of every YAML file under a directory: point it
-at the dbt project root and it walks `models/`, `seeds/` and the rest in sorted
-order, ignoring `target/`, `dbt_packages/` and `dbt_project.yml`. A join whose
-target is not among them is skipped
+`import` reads two shapes, mixed freely: dbt schema files (`models:` and
+`seeds:` entries; seeds are tables to Lightdash too) and Lightdash model files
+(`type: model`, `sql_from`, a `dimensions:` list, the format `export` writes).
+Point it at a file or at a project root and it walks `models/`, `seeds/`,
+`lightdash/models/` and the rest in sorted order, ignoring `target/`,
+`dbt_packages/`, virtualenvs and `dbt_project.yml`. A model file's `sql_from`
+(or a dbt model's `meta.sql_from`) is the dataset `source` verbatim, so
+`--database` / `--schema` only apply to models that do not name their own
+relation. A join whose target is not among them is skipped
 with a `JOIN_TARGET_UNKNOWN` issue, since Ossie relationships may only
 reference datasets in the document.
 
@@ -265,8 +270,6 @@ dataset is unrestricted). Encoding metric filters as `CASE WHEN` and
   from the document.
 - Custom extensions of other vendors (`FOREIGN_EXTENSION_IGNORED`); they
   remain untouched in the Ossie document.
-- Import reads the dbt-meta flavour only; Lightdash model files are not yet
-  read back.
 - Documents are emitted at the in-repo spec version; dbt-core 1.12's native
   Ossie parsing accepts `0.1.0` / `0.1.1` only.
 

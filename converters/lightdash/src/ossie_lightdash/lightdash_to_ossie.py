@@ -70,7 +70,7 @@ _STRUCTURAL_METRIC_KEYS = {"sql", "description", "ai_hint", "name", "model"}
 _STRUCTURAL_DIMENSION_KEYS = {"label", "sql", "ai_hint", "hidden"}
 _STRUCTURAL_JOIN_KEYS = {"join", "sql_on"}
 # Model meta with Ossie vocabulary; everything else is stashed on the dataset.
-_HANDLED_MODEL_KEYS = {"metrics", "joins", "primary_key", "ai_hint"}
+_HANDLED_MODEL_KEYS = {"metrics", "joins", "primary_key", "ai_hint", "sql_from"}
 _HANDLED_COLUMN_KEYS = {"dimension", "metrics"}
 # Model meta that changes query results, not just presentation.
 _ROW_FILTER_KEYS = ("sql_filter", "sql_where", "required_filters")
@@ -365,16 +365,22 @@ class LightdashToOssieConverter:
         catalog: Optional[Catalog] = None,
     ) -> Tuple[OssieDataset, List[OssieMetric], List[_Edge], List[_Edge]]:
         name = model["name"]
-        source = ".".join(part for part in [database, schema, name] if part)
-        if schema is None:
-            issues.append(
-                ConverterIssue(
-                    issue_type=ConverterIssueType.SOURCE_UNQUALIFIED,
-                    element_name=name,
-                )
-            )
-
         model_meta = lightdash_meta(model)
+        # A model that names its own relation (Lightdash model files, or
+        # `meta.sql_from` in dbt) is the source verbatim; otherwise the source
+        # is assembled from the flags.
+        if isinstance(model_meta.get("sql_from"), str) and model_meta["sql_from"].strip():
+            source = model_meta["sql_from"].strip()
+        else:
+            source = ".".join(part for part in [database, schema, name] if part)
+            if schema is None:
+                issues.append(
+                    ConverterIssue(
+                        issue_type=ConverterIssueType.SOURCE_UNQUALIFIED,
+                        element_name=name,
+                    )
+                )
+
         joins = model_meta.get("joins") or []
         aliases = {
             join["alias"]: join["join"]
@@ -488,7 +494,12 @@ class LightdashToOssieConverter:
                 rewritten = context.rewrite(dimension_meta["sql"], column_name)
                 if rewritten is None:
                     return None
-                expression = rewritten
+                # `${TABLE}.col` on column `col` is the plain column.
+                expression = (
+                    column_name
+                    if rewritten == f"{context.dataset_name}.{column_name}"
+                    else rewritten
+                )
             datatype = lightdash_type_to_datatype(dimension_meta.get("type"))
             if datatype is None:
                 datatype = context.catalog_datatypes.get(column_name.lower())

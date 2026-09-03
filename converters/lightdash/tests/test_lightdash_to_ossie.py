@@ -915,3 +915,46 @@ class TestLightdashToOssie:
             for issue in result.issues
             if issue.issue_type is ConverterIssueType.CATALOG_MODEL_MISSING
         ] == ["orphan"]
+
+    def test_lightdash_model_file_is_read_like_dbt_meta(self):
+        from ossie_lightdash.dbt_project import model_file_to_dbt_model
+
+        model_file = {
+            "type": "model",
+            "name": "orders",
+            "label": "Orders",
+            "description": "One row per order",
+            "sql_from": "SELECT * FROM marts.orders WHERE deleted = false",
+            "primary_key": "order_id",
+            "sql_filter": "${TABLE}.season >= 2025",
+            "joins": [{"join": "customers", "sql_on": "${orders.customer_id} = ${customers.customer_id}"}],
+            "metrics": {"aov": {"type": "number", "sql": "${total_amount} / NULLIF(${order_count}, 0)"}},
+            "dimensions": [
+                {"name": "order_id", "type": "number", "sql": "${TABLE}.order_id", "hidden": True,
+                 "metrics": {"order_count": {"type": "count_distinct"}}},
+                {"name": "amount", "type": "number", "sql": "${TABLE}.amount", "format": "usd",
+                 "metrics": {"total_amount": {"type": "sum"}}},
+                {"name": "customer_id", "type": "string", "sql": "${TABLE}.customer_id"},
+                {"name": "amount_bucket", "type": "string", "sql": "CASE WHEN ${amount} > 100 THEN 'big' ELSE 'small' END"},
+            ],
+        }
+        schema_yml = {"models": [model_file_to_dbt_model(model_file),
+                                 {"name": "customers", "columns": [{"name": "customer_id"}]}]}
+        result = LightdashToOssieConverter().convert(schema_yml, schema="ignored")
+        orders = result.output.semantic_model[0].datasets[0]
+        assert orders.source == "SELECT * FROM marts.orders WHERE deleted = false"
+        assert orders.primary_key == ["order_id"]
+        assert _raw_lightdash_data(orders) == {"label": "Orders", "sql_filter": "${TABLE}.season >= 2025"}
+        fields = {f.name: f for f in orders.fields}
+        assert fields["order_id"].dimension is None  # hidden
+        assert fields["amount"].datatype is OssieDataType.DECIMAL
+        assert fields["amount"].expression.dialects[0].expression == "amount"  # ${TABLE}.amount collapses
+        assert _lightdash_data(fields["amount"]) == {"type": "number", "format": "usd"}
+        assert fields["amount_bucket"].expression.dialects[0].expression == (
+            "CASE WHEN orders.amount > 100 THEN 'big' ELSE 'small' END"
+        )
+        assert _metric(result.output, "aov").expression.dialects[0].expression == (
+            "(SUM(orders.amount)) / NULLIF((COUNT(DISTINCT orders.order_id)), 0)"
+        )
+        assert result.output.semantic_model[0].relationships[0].to == "customers"
+        assert not any(i.issue_type is ConverterIssueType.SOURCE_UNQUALIFIED for i in result.issues)

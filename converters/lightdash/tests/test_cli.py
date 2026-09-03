@@ -154,3 +154,21 @@ def test_missing_input_is_an_error(tmp_path, capsys):
     with pytest.raises(SystemExit):
         main(["import", "-i", str(tmp_path / "nope"), "-o", str(tmp_path / "out.yaml")])
     assert "input not found" in capsys.readouterr().err
+
+def test_lightdash_model_files_import_and_round_trip(tmp_path):
+    project = tmp_path / "project"
+    assert main(["export", "-i", str(TPCDS_PATH), "-o", str(project), "--dialect", "SNOWFLAKE"]) == 0
+    back = tmp_path / "back.yaml"
+    # No --database/--schema: the model files name their own sources.
+    assert main(["import", "-i", str(project), "-o", str(back), "--dialect", "SNOWFLAKE"]) == 0
+    original = OssieDocument.model_validate(yaml.safe_load(TPCDS_PATH.read_text())).semantic_model[0]
+    roundtripped = OssieDocument.model_validate(yaml.safe_load(back.read_text())).semantic_model[0]
+    assert {d.name: d.source for d in roundtripped.datasets} == {d.name: d.source for d in original.datasets}
+    assert {d.name: d.primary_key for d in roundtripped.datasets} == {d.name: d.primary_key for d in original.datasets}
+    assert {(d.name, f.name): f.dimension is not None for d in roundtripped.datasets for f in d.fields} == {
+        (d.name, f.name): f.dimension is not None for d in original.datasets for f in d.fields
+    }
+    assert {(r.from_dataset, r.to) for r in roundtripped.relationships} == {
+        (r.from_dataset, r.to) for r in original.relationships
+    }
+    assert len(roundtripped.metrics) == len(original.metrics)
