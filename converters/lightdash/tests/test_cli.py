@@ -47,7 +47,7 @@ def test_import_writes_a_loadable_document(tmp_path, suffix):
 
 def test_export_writes_a_lightdash_project(tmp_path, capsys):
     project = tmp_path / "project"
-    assert main(["export", str(TPCDS_PATH), str(project), "--dialect", "BIGQUERY"]) == 0
+    assert main(["export", "-i", str(TPCDS_PATH), "-o", str(project), "--dialect", "BIGQUERY"]) == 0
     captured = capsys.readouterr()
     # Like the other converters: stdout stays clean, stderr carries the report.
     assert captured.out == ""
@@ -93,7 +93,7 @@ def test_import_reads_a_whole_dbt_project(tmp_path):
     (project / "target" / "stale.yml").write_text("models:\n  - name: stale\n")
 
     document_path = tmp_path / "model.yaml"
-    assert main(["import", str(project), str(document_path), "--schema", "marts"]) == 0
+    assert main(["import", "--input", str(project), "--output", str(document_path), "--schema", "marts"]) == 0
     document = OssieDocument.model_validate(yaml.safe_load(document_path.read_text()))
     assert [d.name for d in document.semantic_model[0].datasets] == ["customers", "orders", "statuses"]
     assert document.semantic_model[0].metrics[0].name == "orders_total"
@@ -112,3 +112,8 @@ def test_import_takes_types_from_a_dbt_catalog(tmp_path):
     fields = {f["name"]: f for f in yaml.safe_load(out.read_text())["semantic_model"][0]["datasets"][0]["fields"]}
     assert fields["race_date"]["datatype"] == "Date"
     assert fields["laps"]["datatype"] == "Integer"
+
+def test_input_and_output_are_required(capsys):
+    with pytest.raises(SystemExit):
+        main(["export", "-i", str(TPCDS_PATH)])
+    assert "both --input and --output are required" in capsys.readouterr().err

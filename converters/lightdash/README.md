@@ -56,14 +56,14 @@ same and picks up the in-repo core package. Once both packages are published,
 
 ```
 # Ossie -> a deployable Lightdash project (no dbt needed)
-ossie-lightdash export semantic_model.yaml my-project --dialect BIGQUERY
+ossie-lightdash export -i semantic_model.yaml -o my-project --dialect BIGQUERY
 cd my-project && lightdash deploy
 
 # Ossie -> one dbt schema.yml with Lightdash meta, for a dbt project
-ossie-lightdash export semantic_model.yaml schema.yml --format dbt-meta --dialect BIGQUERY [--meta-under-config]
+ossie-lightdash export -i semantic_model.yaml -o schema.yml --format dbt-meta --dialect BIGQUERY [--meta-under-config]
 
 # Lightdash dbt meta -> Ossie (a schema file, or a whole dbt project directory)
-ossie-lightdash import path/to/dbt semantic_model.json --database analytics_db --schema marts --dialect BIGQUERY \
+ossie-lightdash import -i path/to/dbt -o semantic_model.json --database analytics_db --schema marts --dialect BIGQUERY \
   --catalog path/to/dbt/target/catalog.json
 ```
 
@@ -83,8 +83,9 @@ per dataset, and a starter `my-project/lightdash.config.yml` whose
 Each dataset's `source` becomes the model's `sql_from` verbatim, a table
 reference or a query.
 
-Issues (anything lost or approximated, see below) are printed to stderr as
-`[ISSUE_TYPE] element`.
+`-i/--input` and `-o/--output` follow the other converters; the two
+positional forms (`export in out`) work too. Issues (anything lost or
+approximated, see below) are printed to stderr as `[ISSUE_TYPE] element`.
 
 ### Python API
 

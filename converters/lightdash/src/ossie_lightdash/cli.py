@@ -83,6 +83,22 @@ def _write_lightdash_project(
             )
 
 
+def _add_io_arguments(parser: argparse.ArgumentParser, input_help: str, output_help: str) -> None:
+    """``-i/--input`` and ``-o/--output`` like the other converters; the two
+    positionals are still accepted."""
+    parser.add_argument("-i", "--input", dest="input_flag", metavar="INPUT", type=Path, help=input_help)
+    parser.add_argument("-o", "--output", dest="output_flag", metavar="OUTPUT", type=Path, help=output_help)
+    parser.add_argument("input", nargs="?", type=Path, help=argparse.SUPPRESS)
+    parser.add_argument("output", nargs="?", type=Path, help=argparse.SUPPRESS)
+
+
+def _resolve_io(parser: argparse.ArgumentParser, args: argparse.Namespace) -> None:
+    args.input = args.input_flag or args.input
+    args.output = args.output_flag or args.output
+    if args.input is None or args.output is None:
+        parser.error("both --input and --output are required")
+
+
 def _print_issues(issues) -> None:
     """One line per issue, with the explanation on its first occurrence."""
     explained = set()
@@ -104,11 +120,10 @@ def main(argv: Optional[List[str]] = None) -> int:
         "export",
         help="Ossie document (.json/.yaml) -> Lightdash model files, or a dbt schema.yml",
     )
-    export_parser.add_argument("input", type=Path)
-    export_parser.add_argument(
-        "output",
-        type=Path,
-        help="project directory (lightdash-yml) or schema file (dbt-meta)",
+    _add_io_arguments(
+        export_parser,
+        "Ossie document (.json or .yaml)",
+        "project directory (lightdash-yml) or schema file (dbt-meta)",
     )
     export_parser.add_argument(
         "--format",
@@ -139,10 +154,11 @@ def main(argv: Optional[List[str]] = None) -> int:
         "import",
         help="Lightdash dbt schema.yml, or a dbt project directory -> Ossie document (.json/.yaml)",
     )
-    import_parser.add_argument(
-        "input", type=Path, help="a schema file, or a directory walked for models: and seeds:"
+    _add_io_arguments(
+        import_parser,
+        "a dbt schema file, or a directory walked for models: and seeds:",
+        "Ossie document to write (.json or .yaml)",
     )
-    import_parser.add_argument("output", type=Path)
     import_parser.add_argument("--database", default=None)
     import_parser.add_argument("--schema", default=None)
     import_parser.add_argument(
@@ -163,6 +179,7 @@ def main(argv: Optional[List[str]] = None) -> int:
     )
 
     args = parser.parse_args(argv)
+    _resolve_io(export_parser if args.command == "export" else import_parser, args)
 
     if args.command == "export":
         dialect = OssieDialect[args.dialect]
