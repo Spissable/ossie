@@ -28,7 +28,7 @@ import yaml
 from ossie import OssieDialect, OssieDocument
 from ossie_lightdash.catalog import load_catalog
 from ossie_lightdash.converter_issues import ISSUE_EXPLANATIONS
-from ossie_lightdash.dbt_project import load_schema
+from ossie_lightdash.dbt_project import load_schema_with_skips
 from ossie_lightdash.lightdash_to_ossie import LightdashToOssieConverter
 from ossie_lightdash.ossie_to_lightdash import OssieToLightdashConverter
 
@@ -255,7 +255,9 @@ def main(argv: Optional[List[str]] = None) -> int:
             )
             summary = f"Wrote {len(result.output['models'])} model(s) to {args.output}."
     else:
-        schema_yml = load_schema(args.input)
+        schema_yml, skipped = load_schema_with_skips(args.input)
+        for file in skipped:
+            print(f"Skipped {file}: not valid YAML (a template or Jinja-only file?)", file=sys.stderr)
         result = LightdashToOssieConverter(OssieDialect[args.dialect]).convert(
             schema_yml,
             database=args.database,

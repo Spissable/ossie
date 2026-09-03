@@ -90,7 +90,7 @@ def test_export_dbt_meta_still_writes_one_schema_file(tmp_path):
     assert main(["export", str(TPCDS_PATH), str(schema_yml), "--format", "dbt-meta"]) == 0
     assert yaml.safe_load(schema_yml.read_text())["version"] == 2
 
-def test_import_reads_a_whole_dbt_project(tmp_path):
+def test_import_reads_a_whole_dbt_project(tmp_path, capsys):
     project = tmp_path / "dbt"
     (project / "models" / "marts").mkdir(parents=True)
     (project / "target").mkdir()
@@ -103,11 +103,14 @@ def test_import_reads_a_whole_dbt_project(tmp_path):
     )
     (project / "data.yml").write_text("seeds:\n  - name: statuses\n    columns:\n      - name: code\n")
     (project / "target" / "stale.yml").write_text("models:\n  - name: stale\n")
+    (project / "models" / "template.yml").write_text("{project_name}:\n  +materialized: view\n")
 
     document_path = tmp_path / "model.yaml"
     assert main(["import", "--input", str(project), "--output", str(document_path), "--schema", "marts"]) == 0
     document = OssieDocument.model_validate(yaml.safe_load(document_path.read_text()))
     assert [d.name for d in document.semantic_model[0].datasets] == ["customers", "orders", "statuses"]
+    err = capsys.readouterr().err
+    assert "Skipped" in err and "template.yml" in err
     assert document.semantic_model[0].metrics[0].name == "orders_total"
 
 def test_import_takes_types_from_a_dbt_catalog(tmp_path):
