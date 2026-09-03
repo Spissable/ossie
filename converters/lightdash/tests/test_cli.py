@@ -52,11 +52,14 @@ def test_export_writes_a_lightdash_project(tmp_path, capsys):
     # Like the other converters: stdout stays clean, stderr carries the report.
     assert captured.out == ""
     assert captured.err.splitlines()[-1].startswith("Wrote 5 model file(s) to ")
-    # The one loss is named, explained once, and counted.
-    assert captured.err.splitlines()[:2] == [
-        "[TIME_ROLE_NOT_REPRESENTABLE] d_year  -- is_time on a non-date type (e.g. an integer year); "
-        "Lightdash has no such marker, the column is a plain dimension",
-        "1 issue(s); everything else converted cleanly.",
+    # The one loss is named, explained, and counted.
+    assert captured.err.splitlines()[:5] == [
+        "TIME_ROLE_NOT_REPRESENTABLE  (1 element)",
+        "  is_time on a non-date type (e.g. an integer year); Lightdash has no such marker, "
+        "the column is a plain dimension",
+        "    d_year",
+        "",
+        "1 issue(s); everything else converted cleanly. Pass --verbose to list every element.",
     ]
     files = sorted(p.name for p in (project / "lightdash" / "models").iterdir())
     assert files == ["customer.yml", "date_dim.yml", "item.yml", "store.yml", "store_sales.yml"]
@@ -126,3 +129,20 @@ def test_input_and_output_are_required(capsys):
     with pytest.raises(SystemExit):
         main(["export", "-i", str(TPCDS_PATH)])
     assert "both --input and --output are required" in capsys.readouterr().err
+
+def test_issues_are_grouped_by_type_unless_verbose(tmp_path, capsys):
+    schema_yml = tmp_path / "schema.yml"
+    columns = "".join(
+        f"      - name: c{i}\n        meta:\n          metrics:\n            m{i}: {{type: sum, filters: [{{x: y}}]}}\n"
+        for i in range(11)
+    )
+    schema_yml.write_text("models:\n  - name: t\n    columns:\n" + columns)
+    assert main(["import", "-i", str(schema_yml), "-o", str(tmp_path / "a.yaml"), "--schema", "s"]) == 0
+    grouped = capsys.readouterr().err.splitlines()
+    assert grouped[0] == "METRIC_FILTER_NOT_PORTABLE  (11 elements)"
+    assert grouped[2] == "    m0, m1, m2, m3, m4, m5, m6, m7"
+    assert grouped[3] == "    ... and 3 more"
+    assert main(["import", "-i", str(schema_yml), "-o", str(tmp_path / "b.yaml"), "--schema", "s", "--verbose"]) == 0
+    verbose = capsys.readouterr().err.splitlines()
+    assert verbose[2] == "    m0, m1, m2, m3, m4, m5, m6, m7, m8, m9, m10"
+    assert "... and" not in "\n".join(verbose)

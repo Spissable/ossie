@@ -110,6 +110,7 @@ def _write_lightdash_project(
 def _add_io_arguments(parser: argparse.ArgumentParser, input_help: str, output_help: str) -> None:
     """``-i/--input`` and ``-o/--output`` like the other converters; the two
     positionals are still accepted."""
+    parser.add_argument("-v", "--verbose", action="store_true", help="list every affected element, not just the first few per issue type")
     parser.add_argument("-i", "--input", dest="input_flag", metavar="INPUT", type=Path, help=input_help)
     parser.add_argument("-o", "--output", dest="output_flag", metavar="OUTPUT", type=Path, help=output_help)
     parser.add_argument("input", nargs="?", type=Path, help=argparse.SUPPRESS)
@@ -123,17 +124,42 @@ def _resolve_io(parser: argparse.ArgumentParser, args: argparse.Namespace) -> No
         parser.error("both --input and --output are required")
 
 
-def _print_issues(issues) -> None:
-    """One line per issue, with the explanation on its first occurrence."""
-    explained = set()
+_SHOWN_PER_TYPE = 8
+_WRAP = 88
+
+
+def _wrap(names, indent: str = "    ") -> str:
+    lines, line = [], indent
+    for name in names:
+        piece = name + ", "
+        if len(line) + len(piece) > _WRAP and line.strip():
+            lines.append(line.rstrip(", "))
+            line = indent
+        line += piece
+    lines.append(line.rstrip(", "))
+    return "\n".join(lines)
+
+
+def _print_issues(issues, verbose: bool = False) -> None:
+    """A short block per issue type: header with the count, the explanation,
+    then the affected elements (the first few, or all of them with
+    ``verbose``)."""
+    by_type: "dict" = {}
     for issue in issues:
-        line = f"[{issue.issue_type.value}] {issue.element_name}"
-        if issue.issue_type not in explained:
-            explained.add(issue.issue_type)
-            line += f"  -- {ISSUE_EXPLANATIONS.get(issue.issue_type, '')}".rstrip(" -")
-        print(line, file=sys.stderr)
+        by_type.setdefault(issue.issue_type, []).append(issue.element_name)
+    for issue_type, elements in by_type.items():
+        unique = list(dict.fromkeys(elements))
+        noun = "element" if len(unique) == 1 else "elements"
+        print(f"{issue_type.value}  ({len(unique)} {noun})", file=sys.stderr)
+        print(f"  {ISSUE_EXPLANATIONS.get(issue_type, '')}", file=sys.stderr)
+        shown = unique if verbose else unique[:_SHOWN_PER_TYPE]
+        print(_wrap(shown), file=sys.stderr)
+        if len(unique) > len(shown):
+            print(f"    ... and {len(unique) - len(shown)} more", file=sys.stderr)
+        print(file=sys.stderr)
     if issues:
-        print(f"{len(issues)} issue(s); everything else converted cleanly.", file=sys.stderr)
+        hint = "" if verbose else " Pass --verbose to list every element."
+        print(f"{len(issues)} issue(s); everything else converted cleanly.{hint}", file=sys.stderr)
 
 
 def main(argv: Optional[List[str]] = None) -> int:
@@ -255,7 +281,7 @@ def main(argv: Optional[List[str]] = None) -> int:
             )
 
     # Issues first, then what was written, all on stderr like the other converters.
-    _print_issues(result.issues)
+    _print_issues(result.issues, verbose=args.verbose)
     print(summary, file=sys.stderr)
     return 0
 
