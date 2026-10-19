@@ -58,7 +58,7 @@ def _roundtrip():
         exported.output,
         database="tpcds",
         schema="public",
-        semantic_model_name=original.semantic_model[0].name,
+        semantic_model_name=original.name,
     )
     return original, exported, reimported
 
@@ -68,19 +68,19 @@ class TestTpcdsRoundtrip:
         original, _, reimported = _roundtrip()
         original_sources = {
             dataset.name: dataset.source
-            for dataset in original.semantic_model[0].datasets
+            for dataset in original.datasets
         }
         roundtripped_sources = {
             dataset.name: dataset.source
-            for dataset in reimported.output.semantic_model[0].datasets
+            for dataset in reimported.output.datasets
         }
         assert roundtripped_sources == original_sources
 
     def test_fields_and_dimension_markers_are_preserved(self):
         original, _, reimported = _roundtrip()
         for original_dataset, roundtripped_dataset in zip(
-            original.semantic_model[0].datasets,
-            reimported.output.semantic_model[0].datasets,
+            original.datasets,
+            reimported.output.datasets,
         ):
             original_fields = {
                 field.name: field.dimension is not None
@@ -108,8 +108,8 @@ class TestTpcdsRoundtrip:
         }
         original, _, reimported = _roundtrip()
         for original_dataset, roundtripped_dataset in zip(
-            original.semantic_model[0].datasets,
-            reimported.output.semantic_model[0].datasets,
+            original.datasets,
+            reimported.output.datasets,
         ):
             roundtripped_by_name = {
                 field.name: field for field in roundtripped_dataset.fields or []
@@ -128,7 +128,7 @@ class TestTpcdsRoundtrip:
         """`is_time` is an Ossie role marker with no Lightdash equivalent, so the
         import direction leaves it unset instead of inferring one."""
         _, _, reimported = _roundtrip()
-        for dataset in reimported.output.semantic_model[0].datasets:
+        for dataset in reimported.output.datasets:
             for field in dataset.fields or []:
                 if field.dimension is not None:
                     assert field.dimension.is_time is None, field.name
@@ -142,18 +142,18 @@ class TestTpcdsRoundtrip:
         }
         original_metrics = {
             metric.name: metric.expression.dialects[0].expression
-            for metric in original.semantic_model[0].metrics or []
+            for metric in original.metrics or []
             if metric.name not in dropped
         }
         # Re-imported metrics carry Lightdash's `<model>_<metric>` id as their
         # Ossie name; the original name is the stashed Lightdash name.
         roundtripped_metrics = {
             _lightdash_name(metric): metric.expression.dialects[0].expression
-            for metric in reimported.output.semantic_model[0].metrics or []
+            for metric in reimported.output.metrics or []
         }
         assert set(roundtripped_metrics) == set(original_metrics)
         assert "store_sales_total_sales" in {
-            metric.name for metric in reimported.output.semantic_model[0].metrics
+            metric.name for metric in reimported.output.metrics
         }
         for name, expression in original_metrics.items():
             assert roundtripped_metrics[name].replace(" ", "") == expression.replace(
@@ -164,10 +164,10 @@ class TestTpcdsRoundtrip:
         original, _, reimported = _roundtrip()
         original_edges = {
             (r.from_dataset, r.to, tuple(r.from_columns), tuple(r.to_columns))
-            for r in original.semantic_model[0].relationships or []
+            for r in original.relationships or []
         }
         roundtripped_edges = {
             (r.from_dataset, r.to, tuple(r.from_columns), tuple(r.to_columns))
-            for r in reimported.output.semantic_model[0].relationships or []
+            for r in reimported.output.relationships or []
         }
         assert roundtripped_edges == original_edges

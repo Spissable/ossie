@@ -28,6 +28,15 @@ import re
 from dataclasses import dataclass, field
 from typing import Callable, Dict, List, Optional
 
+import sqlglot
+from sqlglot import exp
+
+_SQLGLOT_DIALECTS = {
+    "BIGQUERY": "bigquery",
+    "SNOWFLAKE": "snowflake",
+    "DATABRICKS": "databricks",
+}
+
 _REFERENCE_RE = re.compile(r"\$\{([^}]+)\}")
 _NON_PORTABLE_REFERENCE_RE = re.compile(r"\$\{(?:lightdash|ld)\.[^}]*\}")
 # Liquid tags and bare `ld.parameters.x` / `ld.query.filters` / `ld.user.x`
@@ -254,33 +263,37 @@ def lightdash_sql_to_ossie(
     return result
 
 
-_STRING_LITERAL_RE = re.compile(r"('(?:[^']|'')*')")
-
-
-def qualify_bare_columns(sql: str, dataset: str, columns) -> str:
+def qualify_bare_columns(sql: str, dataset: str, columns, *, dialect: str = "ANSI_SQL") -> str:
     """Prefix bare references to the model's own columns with the dataset name.
 
     Lightdash lets SQL name a column of the current model without ``${TABLE}``
-    (``SUM(budget_use)``); Ossie consumers need ``dataset.column``. Only
-    identifiers that name one of ``columns`` are touched, never inside string
-    literals, never when already qualified, never when followed by ``(``.
+    (``SUM(budget_use)``); Ossie consumers need ``dataset.column``.
+    SQL parsing distinguishes column references from types, date parts and
+    qualified paths. Insert prefixes at the original identifier offsets rather
+    than rendering the AST, preserving dialect syntax, comments and whitespace.
+    Unsupported syntax raises so the caller can report it without guessing.
     """
-    lookup = {column.lower(): column for column in columns}
+    lookup = {column.lower() for column in columns}
     if not lookup:
         return sql
-    pattern = re.compile(
-        r"(?<![\w.$])(" + "|".join(re.escape(column) for column in lookup) + r")\b(?!\s*\()",
-        re.IGNORECASE,
-    )
-
-    def replace(match: "re.Match[str]") -> str:
-        return f"{dataset}.{match.group(1)}"
-
-    parts = _STRING_LITERAL_RE.split(sql)
-    return "".join(
-        part if index % 2 else pattern.sub(replace, part)
-        for index, part in enumerate(parts)
-    )
+    statements = sqlglot.parse(sql, read=_SQLGLOT_DIALECTS.get(dialect))
+    if len(statements) != 1 or statements[0] is None:
+        raise ValueError("Expected a single SQL expression")
+    offsets = set()
+    for column in statements[0].find_all(exp.Column):
+        if column.table or column.name.lower() not in lookup:
+            continue
+        # Nested queries have their own column scope; do not bind their names
+        # to the enclosing Lightdash model.
+        if column.find_ancestor(exp.Query):
+            continue
+        start = column.this.meta.get("start")
+        if start is None:
+            raise ValueError("Column source position is unavailable")
+        offsets.add(start)
+    for start in sorted(offsets, reverse=True):
+        sql = sql[:start] + dataset + "." + sql[start:]
+    return sql
 
 
 def referenced_datasets(expression: str, dataset_names: set) -> set:

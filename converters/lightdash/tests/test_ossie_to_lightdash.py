@@ -17,6 +17,8 @@
 
 import json
 
+import pytest
+
 from ossie import (
     OssieAIContextObject,
     OssieCustomExtension,
@@ -30,7 +32,6 @@ from ossie import (
     OssieField,
     OssieMetric,
     OssieRelationship,
-    OssieSemanticModel,
 )
 
 from ossie_lightdash import (
@@ -135,14 +136,10 @@ def _document() -> OssieDocument:
     ]
     return OssieDocument(
         version="0.2.0.dev0",
-        semantic_model=[
-            OssieSemanticModel(
-                name="sales",
-                datasets=[orders, customers],
-                metrics=metrics,
-                relationships=relationships,
-            )
-        ],
+        name="sales",
+        datasets=[orders, customers],
+        metrics=metrics,
+        relationships=relationships,
     )
 
 
@@ -152,6 +149,67 @@ def _model(output, name):
 
 def _column(model, name):
     return next(c for c in model["columns"] if c["name"] == name)
+
+
+@pytest.mark.parametrize("source,expected", [
+    ('"analytics"."marts"."orders"', "orders"),
+    ('`my-project.marts.orders`', "orders"),
+    ('`analytics`.`marts`.`orders`', "orders"),
+    ('[analytics].[marts].[orders]', "orders"),
+    ('(SELECT * FROM raw.orders)', "sales_orders"),
+    ('"marts"."order.items"', "sales_orders"),
+])
+def test_export_names_and_join_references_use_the_same_safe_mapping(source, expected):
+    document = _document()
+    document.datasets[0] = document.datasets[0].model_copy(
+        update={"name": "sales_orders", "source": source}
+    )
+    document.relationships[0] = document.relationships[0].model_copy(
+        update={"from_dataset": "sales_orders"}
+    )
+    result = OssieToLightdashConverter().convert_models(document)
+    assert result.output[0]["name"] == expected
+    assert result.output[0]["sql_from"] == source
+    assert result.output[0]["joins"][0]["sql_on"] == (
+        f"${{{expected}.customer_id}} = ${{customers.customer_id}}"
+    )
+    assert OssieToLightdashConverter().convert(document).output["models"][0]["name"] == expected
+
+
+def test_export_rejects_an_unsafe_fallback_name():
+    document = _document()
+    document.datasets[0] = document.datasets[0].model_copy(
+        update={"name": "../outside", "source": "(SELECT * FROM raw.orders)"}
+    )
+    with pytest.raises(ValueError, match="no safe Lightdash model name"):
+        OssieToLightdashConverter().convert_models(document)
+
+
+def test_model_extension_cannot_override_validated_identity():
+    document = _document()
+    document.datasets[0] = document.datasets[0].model_copy(update={
+        "custom_extensions": [OssieCustomExtension(
+            vendor_name="LIGHTDASH",
+            data=json.dumps({"name": "../outside", "sql_from": "wrong", "type": "chart"}),
+        )]
+    })
+    model = OssieToLightdashConverter().convert_models(document).output[0]
+    assert (model["name"], model["sql_from"], model["type"]) == (
+        "orders", "analytics_db.marts.orders", "model"
+    )
+
+
+def test_export_prefers_portable_sql_over_an_unrelated_vendor_dialect():
+    document = _document()
+    document.datasets[0].fields[0] = document.datasets[0].fields[0].model_copy(update={
+        "expression": OssieExpression(dialects=[
+            OssieDialectExpression(dialect=OssieDialect.MDX, expression="[wrong]"),
+            OssieDialectExpression(dialect=OssieDialect.OSSIE_SQL_2026, expression="order_date"),
+        ])
+    })
+    result = OssieToLightdashConverter(OssieDialect.BIGQUERY).convert_models(document)
+    assert result.output[0]["dimensions"][0]["sql"] == "${TABLE}.order_date"
+    assert not any(issue.issue_type is ConverterIssueType.DIALECT_UNAVAILABLE for issue in result.issues)
 
 
 class TestOssieToLightdash:
@@ -208,11 +266,11 @@ class TestOssieToLightdash:
         document = _document()
         tampered = document.model_copy(deep=True)
         # customers does not join orders, so no model can host the metric.
-        tampered.semantic_model[0] = tampered.semantic_model[0].model_copy(
+        tampered = tampered.model_copy(
             update={
                 "relationships": [],
                 "metrics": [
-                    *tampered.semantic_model[0].metrics,
+                    *tampered.metrics,
                     OssieMetric(
                         name="reversed",
                         expression=_ansi("COUNT(customers.customer_id) / SUM(orders.amount)"),
@@ -231,7 +289,7 @@ class TestOssieToLightdash:
     def test_field_references_resolve_through_declared_joins(self):
         document = _document()
         tampered = document.model_copy(deep=True)
-        orders = tampered.semantic_model[0].datasets[0]
+        orders = tampered.datasets[0]
         orders.fields.append(
             OssieField(
                 name="customer_key",
@@ -239,7 +297,7 @@ class TestOssieToLightdash:
                 dimension=OssieDimension(),
             )
         )
-        customers = tampered.semantic_model[0].datasets[1]
+        customers = tampered.datasets[1]
         customers.fields.append(
             OssieField(
                 name="last_order_status",
@@ -261,7 +319,7 @@ class TestOssieToLightdash:
     def test_preferred_dialect_falls_back_to_ansi_then_reports(self):
         document = _document()
         tampered = document.model_copy(deep=True)
-        orders = tampered.semantic_model[0].datasets[0]
+        orders = tampered.datasets[0]
         orders.fields[1] = OssieField(
             name="status",
             expression=OssieExpression(
@@ -312,36 +370,16 @@ class TestOssieToLightdash:
             {"models": [{"name": "t", "columns": [{"name": "c", "meta": {"dimension": {"format": "usd"}}}]}]},
             schema="s",
         )
-        field = result.output.semantic_model[0].datasets[0].fields[0]
+        field = result.output.datasets[0].fields[0]
         assert field.custom_extensions[0].vendor_name == "LIGHTDASH"
         # Documents written before the registration used the lowercase name.
-        legacy = OssieToLightdashConverter().convert(
-            result.output.model_copy(
-                update={
-                    "semantic_model": [
-                        result.output.semantic_model[0].model_copy(
-                            update={
-                                "datasets": [
-                                    result.output.semantic_model[0].datasets[0].model_copy(
-                                        update={
-                                            "fields": [
-                                                field.model_copy(
-                                                    update={
-                                                        "custom_extensions": [
-                                                            OssieCustomExtension(vendor_name="lightdash", data=field.custom_extensions[0].data)
-                                                        ]
-                                                    }
-                                                )
-                                            ]
-                                        }
-                                    )
-                                ]
-                            }
-                        )
-                    ]
-                }
-            )
+        legacy_document = result.output.model_copy(deep=True)
+        legacy_document.datasets[0].fields[0] = field.model_copy(
+            update={"custom_extensions": [
+                OssieCustomExtension(vendor_name="lightdash", data=field.custom_extensions[0].data)
+            ]}
         )
+        legacy = OssieToLightdashConverter().convert(legacy_document)
         assert _column(_model(legacy.output, "t"), "c")["meta"]["dimension"]["format"] == "usd"
         assert not any(
             issue.issue_type is ConverterIssueType.FOREIGN_EXTENSION_IGNORED for issue in legacy.issues
@@ -350,7 +388,7 @@ class TestOssieToLightdash:
     def test_extension_cannot_override_structural_keys(self):
         document = _document()
         tampered = document.model_copy(deep=True)
-        metric = tampered.semantic_model[0].metrics[0].model_copy(
+        metric = tampered.metrics[0].model_copy(
             update={
                 "custom_extensions": [
                     OssieCustomExtension(
@@ -362,7 +400,7 @@ class TestOssieToLightdash:
                 ]
             }
         )
-        tampered.semantic_model[0].metrics[0] = metric
+        tampered.metrics[0] = metric
         result = OssieToLightdashConverter().convert(tampered)
         column = _column(_model(result.output, "orders"), "amount")
         exported = column["meta"]["metrics"]["total_amount"]
@@ -382,7 +420,7 @@ class TestOssieToLightdash:
                 "to_columns": ["customer_id"],
             }
         )
-        tampered.semantic_model[0].relationships[0] = relationship
+        tampered.relationships[0] = relationship
         result = OssieToLightdashConverter().convert(tampered)
         assert "joins" not in _model(result.output, "orders").get("meta", {})
         assert any(
@@ -394,14 +432,14 @@ class TestOssieToLightdash:
     def test_invalid_extension_json_is_reported(self):
         document = _document()
         tampered = document.model_copy(deep=True)
-        metric = tampered.semantic_model[0].metrics[0].model_copy(
+        metric = tampered.metrics[0].model_copy(
             update={
                 "custom_extensions": [
                     OssieCustomExtension(vendor_name="LIGHTDASH", data="{not json")
                 ]
             }
         )
-        tampered.semantic_model[0].metrics[0] = metric
+        tampered.metrics[0] = metric
         result = OssieToLightdashConverter().convert(tampered)
         assert any(
             issue.issue_type is ConverterIssueType.EXTENSION_DATA_INVALID
@@ -440,7 +478,7 @@ class TestOssieToLightdash:
     def test_repeated_relationship_gets_an_alias(self):
         document = _document()
         tampered = document.model_copy(deep=True)
-        tampered.semantic_model[0].relationships.append(
+        tampered.relationships.append(
             OssieRelationship.model_validate(
                 {
                     "name": "orders_to_referrer",
@@ -469,7 +507,7 @@ class TestOssieToLightdash:
     def test_join_alias_and_attributes_restore_from_extension(self):
         document = _document()
         tampered = document.model_copy(deep=True)
-        tampered.semantic_model[0].relationships[0] = OssieRelationship.model_validate(
+        tampered.relationships[0] = OssieRelationship.model_validate(
             {
                 "name": "orders_to_customers",
                 "from": "orders",
@@ -499,7 +537,7 @@ class TestOssieToLightdash:
     def test_primary_key_and_ai_context_become_model_meta(self):
         document = _document()
         tampered = document.model_copy(deep=True)
-        datasets = tampered.semantic_model[0].datasets
+        datasets = tampered.datasets
         datasets[0] = datasets[0].model_copy(
             update={
                 "primary_key": ["order_id"],
@@ -532,12 +570,12 @@ class TestOssieToLightdash:
     def test_field_and_metric_ai_context_become_ai_hints(self):
         document = _document()
         tampered = document.model_copy(deep=True)
-        orders = tampered.semantic_model[0].datasets[0]
+        orders = tampered.datasets[0]
         orders.fields[1] = orders.fields[1].model_copy(update={"ai_context": "Order lifecycle stage."})
         orders.fields[2] = orders.fields[2].model_copy(
             update={"ai_context": "Gross amount.", "datatype": OssieDataType.DECIMAL}
         )
-        metrics = tampered.semantic_model[0].metrics
+        metrics = tampered.metrics
         metrics[0] = metrics[0].model_copy(update={"ai_context": "Revenue before refunds."})
         result = OssieToLightdashConverter().convert(tampered)
         model = _model(result.output, "orders")
@@ -555,7 +593,7 @@ class TestOssieToLightdash:
     def test_time_axis_withdrawn_becomes_time_intervals_off(self):
         document = _document()
         tampered = document.model_copy(deep=True)
-        orders = tampered.semantic_model[0].datasets[0]
+        orders = tampered.datasets[0]
         orders.fields[0] = orders.fields[0].model_copy(
             update={"datatype": OssieDataType.DATE, "dimension": OssieDimension(is_time=False)}
         )
@@ -579,7 +617,7 @@ class TestOssieToLightdash:
     def test_lightdash_metric_name_comes_from_the_stash_then_the_prefix(self):
         document = _document()
         tampered = document.model_copy(deep=True)
-        tampered.semantic_model[0] = tampered.semantic_model[0].model_copy(
+        tampered = tampered.model_copy(
             update={
                 "metrics": [
                     OssieMetric(
@@ -608,7 +646,7 @@ class TestOssieToLightdash:
     def test_unqualified_metric_is_placed_on_the_stashed_model(self):
         document = _document()
         tampered = document.model_copy(deep=True)
-        tampered.semantic_model[0] = tampered.semantic_model[0].model_copy(
+        tampered = tampered.model_copy(
             update={
                 "metrics": [
                     OssieMetric(
@@ -638,7 +676,7 @@ class TestOssieToLightdash:
     def test_stashed_joins_and_meta_restore_the_explore(self):
         document = _document()
         tampered = document.model_copy(deep=True)
-        datasets = tampered.semantic_model[0].datasets
+        datasets = tampered.datasets
         datasets[0] = datasets[0].model_copy(
             update={
                 "custom_extensions": [
@@ -681,7 +719,7 @@ class TestOssieToLightdash:
             source="analytics_db.marts.regions",
             fields=[OssieField(name="id", expression=_ansi("id"))],
         )
-        tampered.semantic_model[0] = tampered.semantic_model[0].model_copy(
+        tampered = tampered.model_copy(
             update={
                 "datasets": [*datasets, regions],
                 "metrics": [
@@ -717,7 +755,7 @@ class TestOssieToLightdash:
     def test_lightdash_model_files_are_deployable_as_they_are(self):
         document = _document()
         tampered = document.model_copy(deep=True)
-        datasets = tampered.semantic_model[0].datasets
+        datasets = tampered.datasets
         datasets[0] = datasets[0].model_copy(
             update={
                 "primary_key": ["order_id"],

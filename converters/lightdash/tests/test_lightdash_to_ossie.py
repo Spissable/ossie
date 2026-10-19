@@ -17,9 +17,47 @@
 
 import json
 
+import pytest
+
 from ossie import OssieDataType, OssieDialect
 
 from ossie_lightdash import ConverterIssueType, LightdashToOssieConverter
+
+
+@pytest.mark.parametrize("dialect,sql,expected", [
+    (OssieDialect.ANSI_SQL, "CAST(x AS date)", "CAST(ds.x AS date)"),
+    (OssieDialect.ANSI_SQL, "EXTRACT(year FROM d)", "EXTRACT(year FROM ds.d)"),
+    (OssieDialect.SNOWFLAKE, "DATE_TRUNC(year, d)", "DATE_TRUNC(year, ds.d)"),
+    (OssieDialect.BIGQUERY, "DATE_TRUNC(d, YEAR)", "DATE_TRUNC(ds.d, YEAR)"),
+    (OssieDialect.ANSI_SQL, "DATE_TRUNC('year', d)", "DATE_TRUNC('year', ds.d)"),
+    (OssieDialect.ANSI_SQL, "other.col + other . col + x", "other.col + other . col + ds.x"),
+    (OssieDialect.ANSI_SQL, "date + year + other", "ds.date + ds.year + ds.other"),
+    (OssieDialect.SNOWFLAKE, "x::date", "ds.x::date"),
+    (OssieDialect.ANSI_SQL, "CAST(x AS DECIMAL(10, 2))", "CAST(ds.x AS DECIMAL(10, 2))"),
+    (OssieDialect.ANSI_SQL, "COALESCE(x, 'date') /* year */ -- other\n", "COALESCE(ds.x, 'date') /* year */ -- other\n"),
+    (OssieDialect.ANSI_SQL, '"date" + "year"', 'ds."date" + ds."year"'),
+    (OssieDialect.BIGQUERY, '`date` + `year`', 'ds.`date` + ds.`year`'),
+    (OssieDialect.ANSI_SQL, "x + (SELECT MAX(x) FROM other)", "ds.x + (SELECT MAX(x) FROM other)"),
+])
+def test_import_qualifies_only_column_references(dialect, sql, expected):
+    model = {"name": "ds", "columns": [
+        {"name": name} for name in ["x", "d", "date", "year", "other", "col", "decimal"]
+    ] + [{"name": "calculated", "meta": {"dimension": {"sql": sql}}}]}
+    result = LightdashToOssieConverter(dialect).convert({"models": [model]}, schema="public")
+    assert result.output.datasets[0].fields[-1].expression.dialects[0].expression == expected
+    assert result.issues == []
+
+
+def test_import_reports_unparsed_sql_without_guessing_column_positions():
+    sql = "x + vendor_syntax @@@"
+    model = {"name": "ds", "columns": [
+        {"name": "x"}, {"name": "calculated", "meta": {"dimension": {"sql": sql}}}
+    ]}
+    result = LightdashToOssieConverter().convert({"models": [model]}, schema="public")
+    assert result.output.datasets[0].fields[-1].expression.dialects[0].expression == sql
+    assert [(issue.issue_type, issue.element_name) for issue in result.issues] == [
+        (ConverterIssueType.COLUMN_QUALIFICATION_SKIPPED, "calculated")
+    ]
 
 SCHEMA_YML = {
     "version": 2,
@@ -124,7 +162,7 @@ def _metric(document, name):
     """Look a metric up by its Lightdash name (stashed in the extension)."""
     return next(
         m
-        for m in document.semantic_model[0].metrics
+        for m in document.metrics
         if _raw_lightdash_data(m).get("name") == name
     )
 
@@ -141,7 +179,7 @@ class TestLightdashToOssie:
         result = LightdashToOssieConverter().convert(
             SCHEMA_YML, database="analytics_db", schema="marts"
         )
-        dataset = result.output.semantic_model[0].datasets[0]
+        dataset = result.output.datasets[0]
         assert dataset.source == "analytics_db.marts.orders"
         assert not any(
             issue.issue_type is ConverterIssueType.SOURCE_UNQUALIFIED
@@ -150,7 +188,7 @@ class TestLightdashToOssie:
 
     def test_missing_schema_is_reported(self):
         result = LightdashToOssieConverter().convert(SCHEMA_YML)
-        dataset = result.output.semantic_model[0].datasets[0]
+        dataset = result.output.datasets[0]
         assert dataset.source == "orders"
         assert any(
             issue.issue_type is ConverterIssueType.SOURCE_UNQUALIFIED
@@ -159,7 +197,7 @@ class TestLightdashToOssie:
 
     def test_time_dimension(self):
         result = LightdashToOssieConverter().convert(SCHEMA_YML, schema="marts")
-        field = result.output.semantic_model[0].datasets[0].fields[0]
+        field = result.output.datasets[0].fields[0]
         assert field.name == "order_date"
         assert field.label == "Order date"
         assert field.description == "Date the order was placed"
@@ -168,12 +206,12 @@ class TestLightdashToOssie:
         # marker with no Lightdash source, so it stays unset.
         assert field.datatype is OssieDataType.DATE
         assert field.dimension.is_time is None
-        withdrawn = result.output.semantic_model[0].datasets[0].fields[2]
+        withdrawn = result.output.datasets[0].fields[2]
         assert withdrawn.name == "updated_at"
         assert withdrawn.dimension.is_time is False
         assert _lightdash_data(withdrawn) == {"type": "timestamp"}
         # A custom interval list is not a role marker: it stays in the extension.
-        custom = result.output.semantic_model[0].datasets[0].fields[3]
+        custom = result.output.datasets[0].fields[3]
         assert custom.dimension.is_time is None
         assert _lightdash_data(custom) == {"type": "timestamp", "time_intervals": ["DAY", "MONTH"]}
 
@@ -181,7 +219,7 @@ class TestLightdashToOssie:
         result = LightdashToOssieConverter().convert(SCHEMA_YML, schema="marts")
         by_name = {
             field.name: field
-            for field in result.output.semantic_model[0].datasets[0].fields
+            for field in result.output.datasets[0].fields
         }
         assert by_name["status"].datatype is OssieDataType.STRING
         assert by_name["order_date"].datatype is OssieDataType.DATE
@@ -225,7 +263,7 @@ class TestLightdashToOssie:
 
     def test_join_becomes_relationship(self):
         result = LightdashToOssieConverter().convert(SCHEMA_YML, schema="marts")
-        relationship = result.output.semantic_model[0].relationships[0]
+        relationship = result.output.relationships[0]
         assert relationship.from_dataset == "orders"
         assert relationship.to == "customers"
         assert relationship.from_columns == ["customer_id"]
@@ -292,7 +330,7 @@ class TestLightdashToOssie:
             ]
         }
         result = LightdashToOssieConverter().convert(schema_yml, schema="marts")
-        assert result.output.semantic_model[0].metrics is None
+        assert result.output.metrics is None
         assert any(
             issue.issue_type is ConverterIssueType.METRIC_SQL_MISSING
             and issue.element_name == "broken_metric"
@@ -312,7 +350,7 @@ class TestLightdashToOssie:
             ]
         }
         result = LightdashToOssieConverter().convert(schema_yml, schema="marts")
-        assert result.output.semantic_model[0].relationships is None
+        assert result.output.relationships is None
         assert any(
             issue.issue_type is ConverterIssueType.JOIN_SQL_UNPARSED
             for issue in result.issues
@@ -418,7 +456,7 @@ class TestLightdashToOssie:
         result = LightdashToOssieConverter().convert(schema_yml, schema="marts")
         by_name = {
             field.name: field.expression.dialects[0].expression
-            for field in result.output.semantic_model[0].datasets[0].fields
+            for field in result.output.datasets[0].fields
         }
         assert by_name["full_name"] == "customers.first_name || ' ' || customers.last_name"
         assert by_name["order_count"] == (
@@ -463,9 +501,9 @@ class TestLightdashToOssie:
             ]
         }
         result = LightdashToOssieConverter().convert(schema_yml, schema="marts")
-        dataset = result.output.semantic_model[0].datasets[0]
+        dataset = result.output.datasets[0]
         assert [field.name for field in dataset.fields] == ["order_date"]
-        assert result.output.semantic_model[0].metrics is None
+        assert result.output.metrics is None
         assert sorted(
             issue.element_name
             for issue in result.issues
@@ -503,7 +541,7 @@ class TestLightdashToOssie:
             ]
         }
         result = LightdashToOssieConverter().convert(schema_yml, schema="marts")
-        relationships = result.output.semantic_model[0].relationships
+        relationships = result.output.relationships
         assert [(r.name, r.to, r.from_columns, r.to_columns) for r in relationships] == [
             ("orders_to_sold_date", "date_dim", ["sold_date_id"], ["date_id"]),
             ("orders_to_return_date", "date_dim", ["return_date_id"], ["date_id"]),
@@ -512,7 +550,7 @@ class TestLightdashToOssie:
             "alias": "sold_date",
             "relationship": "many-to-one",
         }
-        field = result.output.semantic_model[0].datasets[0].fields[0]
+        field = result.output.datasets[0].fields[0]
         assert field.expression.dialects[0].expression == "date_dim.year"
         assert any(
             issue.issue_type is ConverterIssueType.ALIAS_REFERENCE_FLATTENED
@@ -526,12 +564,12 @@ class TestLightdashToOssie:
         )
         metric = _metric(result.output, "total_amount")
         assert [d.dialect for d in metric.expression.dialects] == [OssieDialect.BIGQUERY]
-        field = result.output.semantic_model[0].datasets[0].fields[0]
+        field = result.output.datasets[0].fields[0]
         assert field.expression.dialects[0].dialect is OssieDialect.BIGQUERY
 
     def test_primary_key_and_ai_hint_become_dataset_attributes(self):
         result = LightdashToOssieConverter().convert(SCHEMA_YML, schema="marts")
-        orders, customers = result.output.semantic_model[0].datasets
+        orders, customers = result.output.datasets
         assert orders.primary_key == ["order_id"]
         assert orders.ai_context == "Orders placed in the web shop.\nOne row per order."
         assert customers.primary_key == ["customer_id", "region"]
@@ -580,14 +618,14 @@ class TestLightdashToOssie:
             ]
         }
         result = LightdashToOssieConverter().convert(schema_yml, schema="marts")
-        orders = result.output.semantic_model[0].datasets[0]
+        orders = result.output.datasets[0]
         assert orders.primary_key == ["order_id"]
         assert orders.fields[0].label == "Order amount"
         assert orders.fields[0].datatype is OssieDataType.DECIMAL
         assert _metric(result.output, "total_amount").expression.dialects[0].expression == (
             "SUM(orders.amount)"
         )
-        assert result.output.semantic_model[0].relationships[0].to == "customers"
+        assert result.output.relationships[0].to == "customers"
 
     def test_metric_names_are_qualified_with_the_model(self):
         result = LightdashToOssieConverter().convert(SCHEMA_YML, schema="marts")
@@ -595,7 +633,7 @@ class TestLightdashToOssie:
         assert metric.name == "orders_total_amount"
         assert _raw_lightdash_data(metric)["name"] == "total_amount"
         assert _raw_lightdash_data(metric)["model"] == "orders"
-        assert [m.name for m in result.output.semantic_model[0].metrics][:3] == [
+        assert [m.name for m in result.output.metrics][:3] == [
             "orders_total_amount",
             "orders_latest_amount",
             "orders_median_amount",
@@ -615,7 +653,7 @@ class TestLightdashToOssie:
             ]
         }
         result = LightdashToOssieConverter().convert(schema_yml, schema="marts")
-        assert [m.name for m in result.output.semantic_model[0].metrics] == [
+        assert [m.name for m in result.output.metrics] == [
             "orders_x_total",
             "orders_x_total_2",
         ]
@@ -642,7 +680,7 @@ class TestLightdashToOssie:
             "seeds": [{"name": "order_statuses", "columns": [{"name": "id"}]}],
         }
         result = LightdashToOssieConverter().convert(schema_yml, schema="marts")
-        semantic_model = result.output.semantic_model[0]
+        semantic_model = result.output
         assert [dataset.name for dataset in semantic_model.datasets] == ["orders", "order_statuses"]
         assert [relationship.to for relationship in semantic_model.relationships] == ["order_statuses"]
         assert [
@@ -686,7 +724,7 @@ class TestLightdashToOssie:
             "SUM(CASE WHEN budgets.device_type = 'device_type' THEN 1 END) / COUNT(*)"
         )
         # A column named like a function is not qualified when called.
-        fields = {f.name: f.expression.dialects[0].expression for f in result.output.semantic_model[0].datasets[0].fields}
+        fields = {f.name: f.expression.dialects[0].expression for f in result.output.datasets[0].fields}
         assert fields["count"] == "COUNT(budgets.budget_use) OVER ()"
 
     def test_chained_and_expression_joins_are_stashed_and_edges_derived(self):
@@ -734,7 +772,7 @@ class TestLightdashToOssie:
             ]
         }
         result = LightdashToOssieConverter().convert(schema_yml, schema="marts")
-        semantic_model = result.output.semantic_model[0]
+        semantic_model = result.output
         edges = [(r.from_dataset, r.to, r.from_columns, r.to_columns) for r in semantic_model.relationships]
         # The chained edge projects -> organizations is declared on projects
         # too; the declared one wins and carries its extras.
@@ -776,7 +814,7 @@ class TestLightdashToOssie:
             ]
         }
         result = LightdashToOssieConverter().convert(schema_yml, schema="marts")
-        edges = [(r.from_dataset, r.to) for r in result.output.semantic_model[0].relationships]
+        edges = [(r.from_dataset, r.to) for r in result.output.relationships]
         assert edges == [("users", "roles"), ("roles", "projects")]
 
     def test_column_meta_outside_dimension_is_stashed(self):
@@ -797,7 +835,7 @@ class TestLightdashToOssie:
             ]
         }
         result = LightdashToOssieConverter().convert(schema_yml, schema="marts")
-        field = result.output.semantic_model[0].datasets[0].fields[0]
+        field = result.output.datasets[0].fields[0]
         assert _lightdash_data(field) == {
             "type": "number",
             "column_meta": {
@@ -821,7 +859,7 @@ class TestLightdashToOssie:
             ]
         }
         result = LightdashToOssieConverter().convert(schema_yml, schema="marts")
-        fields = {f.name: f for f in result.output.semantic_model[0].datasets[0].fields}
+        fields = {f.name: f for f in result.output.datasets[0].fields}
         assert fields["plain"].dimension is not None
         assert fields["shown"].dimension is not None
         assert _lightdash_data(fields["shown"]) == {"type": "string"}
@@ -903,7 +941,7 @@ class TestLightdashToOssie:
             }
         }
         result = LightdashToOssieConverter().convert(schema_yml, schema="marts", catalog=catalog)
-        fields = {f.name: f for f in result.output.semantic_model[0].datasets[0].fields}
+        fields = {f.name: f for f in result.output.datasets[0].fields}
         assert fields["points"].datatype is OssieDataType.STRING  # authored wins
         assert fields["position"].datatype is OssieDataType.INTEGER  # gap filled
         assert fields["race_date"].datatype is OssieDataType.DATE  # no meta at all
@@ -941,7 +979,7 @@ class TestLightdashToOssie:
         schema_yml = {"models": [model_file_to_dbt_model(model_file),
                                  {"name": "customers", "columns": [{"name": "customer_id"}]}]}
         result = LightdashToOssieConverter().convert(schema_yml, schema="ignored")
-        orders = result.output.semantic_model[0].datasets[0]
+        orders = result.output.datasets[0]
         assert orders.source == "SELECT * FROM marts.orders WHERE deleted = false"
         assert orders.primary_key == ["order_id"]
         assert _raw_lightdash_data(orders) == {"label": "Orders", "sql_filter": "${TABLE}.season >= 2025"}
@@ -956,5 +994,5 @@ class TestLightdashToOssie:
         assert _metric(result.output, "aov").expression.dialects[0].expression == (
             "(SUM(orders.amount)) / NULLIF((COUNT(DISTINCT orders.order_id)), 0)"
         )
-        assert result.output.semantic_model[0].relationships[0].to == "customers"
+        assert result.output.relationships[0].to == "customers"
         assert not any(i.issue_type is ConverterIssueType.SOURCE_UNQUALIFIED for i in result.issues)

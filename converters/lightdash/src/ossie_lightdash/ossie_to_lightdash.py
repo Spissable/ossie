@@ -30,6 +30,7 @@ Ossie-derived definition.
 """
 
 import json
+import re
 from typing import Any, Dict, List, Optional, Set, Tuple
 
 from ossie import (
@@ -68,7 +69,7 @@ _PROTECTED_METRIC_KEYS = {"sql", "description", "ai_hint", "name", "model"}
 _PROTECTED_AGGREGATION_KEYS = _PROTECTED_METRIC_KEYS | {"type", "percentile"}
 _PROTECTED_JOIN_KEYS = {"join", "sql_on", "alias"}
 # Dataset-level stash keys that map to Ossie vocabulary or are handled apart.
-_PROTECTED_MODEL_KEYS = {"joins", "metrics", "primary_key", "ai_hint"}
+_PROTECTED_MODEL_KEYS = {"joins", "metrics", "primary_key", "ai_hint", "name", "type", "sql_from"}
 # Order of the top-level keys in a Lightdash model file; anything else
 # (stashed model meta) follows in source order.
 _MODEL_KEY_ORDER = ("type", "name", "label", "description", "sql_from", "primary_key", "ai_hint")
@@ -191,17 +192,40 @@ def _nest_meta_under_config(node: Dict[str, Any]) -> None:
         node["config"] = {"meta": meta}
 
 
+_MODEL_NAME_RE = re.compile(r"[A-Za-z_][A-Za-z0-9_]*")
+_SOURCE_IDENTIFIER = r'(?:[A-Za-z_][A-Za-z0-9_$]*|"(?:""|[^"])+"|`(?:``|[^`])+`|\[(?:\]\]|[^\]])+\])'
+_SOURCE_PATH_RE = re.compile(rf"{_SOURCE_IDENTIFIER}(?:\s*\.\s*{_SOURCE_IDENTIFIER})*")
+
+
 def _model_name_for(dataset: OssieDataset) -> str:
-    """A Lightdash table is addressed by its dbt model name = the source's table part."""
-    return dataset.source.rsplit(".", 1)[-1]
+    """Use a simple source's table name, otherwise its logical dataset name."""
+    source = dataset.source.strip()
+    # BigQuery may quote the entire project.dataset.table path with backticks.
+    if re.fullmatch(r"`[A-Za-z_][A-Za-z0-9_-]*(?:\.[A-Za-z_][A-Za-z0-9_]*)+`", source):
+        source = source[1:-1]
+        candidate = source.rsplit(".", 1)[-1]
+    elif _SOURCE_PATH_RE.fullmatch(source):
+        candidate = re.findall(_SOURCE_IDENTIFIER, source)[-1]
+        if candidate[0] in ('"', '`', '['):
+            candidate = candidate[1:-1]
+    else:
+        candidate = dataset.name
+    if not _MODEL_NAME_RE.fullmatch(candidate):
+        candidate = dataset.name
+    if not _MODEL_NAME_RE.fullmatch(candidate):
+        raise ValueError(
+            f"Dataset {dataset.name!r} has no safe Lightdash model name; use a dataset "
+            "name starting with a letter or underscore, followed by letters, digits or underscores."
+        )
+    return candidate
 
 
 class OssieToLightdashConverter:
     """Converts an OssieDocument into a Lightdash-flavoured dbt schema.yml dict.
 
     ``dialect`` is the expression dialect to prefer (the project's warehouse);
-    ``ANSI_SQL`` is the fallback, and an expression offering neither is taken
-    from its first dialect with a ``DIALECT_UNAVAILABLE`` issue.
+    ``OSSIE_SQL_2026`` and ``ANSI_SQL`` are the fallbacks. An expression offering
+    none of these is taken from its first dialect with a ``DIALECT_UNAVAILABLE`` issue.
     """
 
     def __init__(
@@ -216,9 +240,7 @@ class OssieToLightdashConverter:
     def convert(self, document: OssieDocument) -> ConverterResult[Dict[str, Any]]:
         """Ossie document → dbt ``schema.yml`` dict with Lightdash ``meta``."""
         issues: List[ConverterIssue] = []
-        models: List[Dict[str, Any]] = []
-        for semantic_model in document.semantic_model:
-            models.extend(model for _, model in self._convert_semantic_model(semantic_model, issues))
+        models = [model for _, model in self._convert_semantic_model(document, issues)]
         if self._meta_under_config:
             for model in models:
                 _nest_meta_under_config(model)
@@ -236,9 +258,8 @@ class OssieToLightdashConverter:
         """
         issues: List[ConverterIssue] = []
         models: List[Dict[str, Any]] = []
-        for semantic_model in document.semantic_model:
-            for dataset, model in self._convert_semantic_model(semantic_model, issues):
-                models.append(_to_lightdash_model(dataset, model, issues))
+        for dataset, model in self._convert_semantic_model(document, issues):
+            models.append(_to_lightdash_model(dataset, model, issues))
         return ConverterResult(output=models, issues=issues)
 
     def _pick_expression(
@@ -248,7 +269,7 @@ class OssieToLightdashConverter:
             dialect_expression.dialect: dialect_expression.expression
             for dialect_expression in expression.dialects
         }
-        for dialect in (self._dialect, OssieDialect.ANSI_SQL):
+        for dialect in (self._dialect, OssieDialect.OSSIE_SQL_2026, OssieDialect.ANSI_SQL):
             if dialect in by_dialect:
                 return by_dialect[dialect]
         if not expression.dialects:
@@ -266,9 +287,21 @@ class OssieToLightdashConverter:
     ) -> List[Tuple[OssieDataset, Dict[str, Any]]]:
         datasets = semantic_model.datasets or []
         dataset_names = {dataset.name for dataset in datasets}
-        model_name_by_dataset = {
-            dataset.name: _model_name_for(dataset) for dataset in datasets
-        }
+        model_name_by_dataset: Dict[str, str] = {}
+        dataset_by_model_name: Dict[str, str] = {}
+        for dataset in datasets:
+            name = _model_name_for(dataset)
+            # Also reject case-only collisions on case-insensitive filesystems.
+            previous = dataset_by_model_name.get(name.casefold())
+            if previous is not None:
+                raise ValueError(
+                    f"Datasets {previous!r} and {dataset.name!r} both export to "
+                    f"Lightdash model {name!r}; model names must be unique (ignoring case)."
+                )
+            if dataset.name in model_name_by_dataset:
+                raise ValueError(f"Duplicate dataset name: {dataset.name!r}")
+            dataset_by_model_name[name.casefold()] = dataset.name
+            model_name_by_dataset[dataset.name] = name
 
         # Joins are planned first: field and metric expressions may reference
         # other datasets only through the joins their own dataset declares.
@@ -305,7 +338,11 @@ class OssieToLightdashConverter:
 
         for dataset in datasets:
             model, columns = self._convert_dataset(
-                dataset, dataset_names, references_by_dataset.get(dataset.name, {}), issues
+                dataset,
+                model_name_by_dataset[dataset.name],
+                dataset_names,
+                references_by_dataset.get(dataset.name, {}),
+                issues,
             )
             meta = model.setdefault("meta", {})
             meta.update(
@@ -396,6 +433,7 @@ class OssieToLightdashConverter:
     def _convert_dataset(
         self,
         dataset: OssieDataset,
+        model_name: str,
         dataset_names: Set[str],
         references: JoinReferences,
         issues: List[ConverterIssue],
@@ -483,7 +521,7 @@ class OssieToLightdashConverter:
                 )
             columns_by_name[field.name] = column
 
-        model: Dict[str, Any] = {"name": _model_name_for(dataset)}
+        model: Dict[str, Any] = {"name": model_name}
         if dataset.description:
             model["description"] = dataset.description
         meta: Dict[str, Any] = {}

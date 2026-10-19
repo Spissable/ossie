@@ -194,7 +194,7 @@ def main(argv: Optional[List[str]] = None) -> int:
         "--dialect",
         choices=[dialect.name for dialect in OssieDialect],
         default=OssieDialect.ANSI_SQL.name,
-        help="preferred expression dialect (falls back to ANSI_SQL)",
+        help="preferred expression dialect (falls back to OSSIE_SQL_2026, then ANSI_SQL)",
     )
     export_parser.add_argument(
         "--meta-under-config",
@@ -235,14 +235,21 @@ def main(argv: Optional[List[str]] = None) -> int:
 
     if args.command == "export":
         dialect = OssieDialect[args.dialect]
-        document = _read_document(args.input)
-        converter = OssieToLightdashConverter(dialect, meta_under_config=args.meta_under_config)
+        try:
+            document = _read_document(args.input)
+            converter = OssieToLightdashConverter(dialect, meta_under_config=args.meta_under_config)
+            result = (
+                converter.convert_models(document)
+                if args.format == "lightdash-yml"
+                else converter.convert(document)
+            )
+        except ValueError as exc:
+            export_parser.error(str(exc))
         if args.format == "lightdash-yml":
-            result = converter.convert_models(document)
             _write_lightdash_project(
                 result.output,
                 args.output,
-                name=document.semantic_model[0].name if document.semantic_model else "ossie",
+                name=document.name,
                 warehouse=args.warehouse or _WAREHOUSE_BY_DIALECT.get(dialect),
             )
             summary = (
@@ -250,7 +257,6 @@ def main(argv: Optional[List[str]] = None) -> int:
                 f" and {args.output / 'lightdash.config.yml'}; run `lightdash compile` there."
             )
         else:
-            result = converter.convert(document)
             args.output.write_text(
                 yaml.safe_dump(result.output, sort_keys=False, allow_unicode=True),
                 encoding="utf-8",
@@ -267,7 +273,7 @@ def main(argv: Optional[List[str]] = None) -> int:
             semantic_model_name=args.semantic_model_name,
             catalog=load_catalog(args.catalog) if args.catalog else None,
         )
-        semantic_model = result.output.semantic_model[0]
+        semantic_model = result.output
         summary = (
             f"Wrote {len(semantic_model.datasets or [])} dataset(s), "
             f"{len(semantic_model.metrics or [])} metric(s), "

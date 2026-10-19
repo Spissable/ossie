@@ -37,11 +37,14 @@ def test_import_writes_a_loadable_document(tmp_path, suffix):
     assert main(["import", str(schema_yml), str(document_path), "--schema", "public"]) == 0
 
     text = document_path.read_text(encoding="utf-8")
+    raw = yaml.safe_load(text)
+    assert "semantic_model" not in raw
+    assert raw["name"] == "lightdash_semantic_model"
     if suffix == ".json":
         document = OssieDocument.model_validate_json(text)
     else:
         document = OssieDocument.model_validate(yaml.safe_load(text))
-    assert {dataset.name for dataset in document.semantic_model[0].datasets} == {
+    assert {dataset.name for dataset in document.datasets} == {
         "store_sales", "date_dim", "customer", "item", "store"
     }
 
@@ -108,10 +111,10 @@ def test_import_reads_a_whole_dbt_project(tmp_path, capsys):
     document_path = tmp_path / "model.yaml"
     assert main(["import", "--input", str(project), "--output", str(document_path), "--schema", "marts"]) == 0
     document = OssieDocument.model_validate(yaml.safe_load(document_path.read_text()))
-    assert [d.name for d in document.semantic_model[0].datasets] == ["customers", "orders", "statuses"]
+    assert [d.name for d in document.datasets] == ["customers", "orders", "statuses"]
     err = capsys.readouterr().err
     assert "Skipped" in err and "template.yml" in err
-    assert document.semantic_model[0].metrics[0].name == "orders_total"
+    assert document.metrics[0].name == "orders_total"
 
 def test_import_takes_types_from_a_dbt_catalog(tmp_path):
     schema_yml = tmp_path / "schema.yml"
@@ -124,7 +127,7 @@ def test_import_takes_types_from_a_dbt_catalog(tmp_path):
     }))
     out = tmp_path / "model.yaml"
     assert main(["import", str(schema_yml), str(out), "--schema", "marts", "--catalog", str(catalog)]) == 0
-    fields = {f["name"]: f for f in yaml.safe_load(out.read_text())["semantic_model"][0]["datasets"][0]["fields"]}
+    fields = {f["name"]: f for f in yaml.safe_load(out.read_text())["datasets"][0]["fields"]}
     assert fields["race_date"]["datatype"] == "Date"
     assert fields["laps"]["datatype"] == "Integer"
 
@@ -161,8 +164,8 @@ def test_lightdash_model_files_import_and_round_trip(tmp_path):
     back = tmp_path / "back.yaml"
     # No --database/--schema: the model files name their own sources.
     assert main(["import", "-i", str(project), "-o", str(back), "--dialect", "SNOWFLAKE"]) == 0
-    original = OssieDocument.model_validate(yaml.safe_load(TPCDS_PATH.read_text())).semantic_model[0]
-    roundtripped = OssieDocument.model_validate(yaml.safe_load(back.read_text())).semantic_model[0]
+    original = OssieDocument.model_validate(yaml.safe_load(TPCDS_PATH.read_text()))
+    roundtripped = OssieDocument.model_validate(yaml.safe_load(back.read_text()))
     assert {d.name: d.source for d in roundtripped.datasets} == {d.name: d.source for d in original.datasets}
     assert {d.name: d.primary_key for d in roundtripped.datasets} == {d.name: d.primary_key for d in original.datasets}
     assert {(d.name, f.name): f.dimension is not None for d in roundtripped.datasets for f in d.fields} == {
@@ -172,3 +175,28 @@ def test_lightdash_model_files_import_and_round_trip(tmp_path):
         (r.from_dataset, r.to) for r in original.relationships
     }
     assert len(roundtripped.metrics) == len(original.metrics)
+
+
+@pytest.mark.parametrize("output_format", ["lightdash-yml", "dbt-meta"])
+@pytest.mark.parametrize("table", ["orders", "Orders"])
+def test_export_collision_fails_before_writing(tmp_path, capsys, output_format, table):
+    source = tmp_path / "collision.yaml"
+    source.write_text(yaml.safe_dump({
+        "version": "0.2.0.dev0", "name": "collision", "datasets": [
+            {"name": "sales_orders", "source": "sales.orders"},
+            {"name": "archived_orders", "source": f"archive.{table}"},
+        ],
+    }))
+    output = tmp_path / ("project" if output_format == "lightdash-yml" else "schema.yml")
+    if output_format == "lightdash-yml":
+        existing = output / "lightdash" / "models" / "orders.yml"
+        existing.parent.mkdir(parents=True)
+    else:
+        existing = output
+    existing.write_text("keep this file\n")
+    before = {p.relative_to(tmp_path): p.read_bytes() for p in tmp_path.rglob("*") if p.is_file()}
+    with pytest.raises(SystemExit) as error:
+        main(["export", "-i", str(source), "-o", str(output), "--format", output_format])
+    assert error.value.code == 2
+    assert "both export to Lightdash model" in capsys.readouterr().err
+    assert {p.relative_to(tmp_path): p.read_bytes() for p in tmp_path.rglob("*") if p.is_file()} == before

@@ -42,6 +42,15 @@ This document defines the SQL expression language subset that Ossie-compliant im
 
 We expect there will be extensions to this language to cover concepts such as sub-queries, grain calculations, etc.  However, these will each have their own proposal.
 
+### Model Declaration vs. Querying
+
+This expression language is scoped to *declaring* a model — authoring the logical layer's metrics, fields, and filters. It does not define a query interface. The two are distinct:
+
+* **Declaration** uses expressions to define what a model is. This document governs declaration.
+* **Querying** evaluates a question against a declared model and returns rows. Query interfaces will be defined in separate documents.
+
+Consequently, the expressions defined here only declare a model: adding a dialect here does not mean Ossie supports querying with that dialect.
+
 ### Design Principles
 
 1. **Portability**: Core functions work identically across all implementations  
@@ -51,8 +60,8 @@ We expect there will be extensions to this language to cover concepts such as su
 
 ### Changes to YAML
 
-1) Create a new dialect in the Ossie spec: Ossie\_SQL\_2026, which refers to this language specification.   
-2) Make Ossie\_SQL\_2026 the default dialect if one is not chosen.
+1) OSSIE\_SQL\_2026 is registered as a dialect in the Ossie spec; it refers to this language specification.   
+2) Make OSSIE\_SQL\_2026 the default dialect if one is not chosen.
 
 ### Standards Reference
 
@@ -76,7 +85,7 @@ All identifiers MUST be valid names and follow ANSI SQL naming, with the size li
 
 Regular identifiers (unquoted) should be case insensitive.    For example, an identifier id is regular, so it would match with Id or iD.  Comparing quoted and non-quoted identifiers is DB specific, so for best portability it is best to use simple identifiers.
 
-The quote character for the Ossie dialect will follow ANSI SQL and support the double quote character (“).  This means that if an expression is in a field expression or as an identifier in the YAML, this will be the expected quoting.  However, there are some databases that use other escape characters.  Working with these have the option of either creating expressions using their dialect or having the Ossie document written in the Ossie dialect, but then having the SQL Interface queried in the local dialect.  The SQL Interface will be defined in a different document. 
+The quote character for the Ossie dialect will follow ANSI SQL and support the double quote character (“).  This means that if an expression is in a field expression or as an identifier in the YAML, this will be the expected quoting.  However, there are some databases that use other escape characters.  Working with these have the option of either creating expressions using their dialect or having the Ossie document written in the Ossie dialect, but then queried in the local dialect. 
 
 #### Comparison Table
 
@@ -143,8 +152,8 @@ Standard SQL operator precedence applies (highest to lowest):
 3. Multiplication/Division: `*`, `/`, `%`  
 4. Addition/Subtraction: `+`, `-`  
 5. Comparison: `=`, `<>`, `<`, `>`, `<=`, `>=`, `LIKE`, `IN`, `BETWEEN`, `IS NULL`   
-6`AND`  
-7`OR`
+6. Logical AND: `AND`  
+7. Logical OR: `OR`
 
 ---
 
@@ -398,7 +407,7 @@ a dialect extension.
 | Function | Syntax | Description |
 | :---- | :---- | :---- |
 | `CONCAT` | `CONCAT(str1, str2, ...)` | Concatenate strings |
-| `||` | `str1 || str2` | Concatenation operator |
+| `\|\|` | `str1 \|\| str2` | Concatenation operator |
 | `LENGTH` | `LENGTH(str)` | String length in characters |
 | `LOWER` | `LOWER(str)` | Convert to lowercase |
 | `UPPER` | `UPPER(str)` | Convert to uppercase |
@@ -548,9 +557,20 @@ When, adding the query interface, window functions will be subject to where they
 ```sql
 function_name(args) OVER (
   [PARTITION BY partition_expr, ...]
-  [ORDER BY order_expr [ASC|DESC], ...]
+  [ORDER BY order_expr [ASC|DESC] [NULLS {FIRST|LAST}], ...]
   [frame_clause]
 )
+```
+
+Each `ORDER BY` item has three independent parts:
+
+- `order_expr`: the value rows are sorted by.
+- `ASC` or `DESC`: the sort direction of non-NULL values.
+- `NULLS FIRST` or `NULLS LAST`: whether NULL values of `order_expr` sort before or after its non-NULL values, regardless of the sort direction.
+
+```sql
+-- Rank non-NULL revenues from high to low, rows with a NULL revenue last
+RANK() OVER (ORDER BY revenue DESC NULLS LAST)
 ```
 
 Frame clause options:
@@ -664,7 +684,7 @@ expression:
 | :---- | :---- | :---- | :---- | :---- | :---- |
 | Date truncation | `DATE_TRUNC('month', d)` | `DATE_TRUNC('month', d)` | `DATE_TRUNC(d, MONTH)` | `DATE_TRUNC('month', d)` | `DATE_TRUNC('month', d)` |
 | Date add | `DATEADD(day, 7, d)` | `DATEADD(day, 7, d)` | `DATE_ADD(d, INTERVAL 7 DAY)` | `DATE_ADD(d, 7)` | `d + INTERVAL '7 days'` |
-| String concat | `CONCAT(a, b)` | `CONCAT(a, b)` | `CONCAT(a, b)` | `CONCAT(a, b)` | `a || b` |
+| String concat | `CONCAT(a, b)` | `CONCAT(a, b)` | `CONCAT(a, b)` | `CONCAT(a, b)` | `a \|\| b` |
 | Null coalesce | `COALESCE(a, b)` | `COALESCE(a, b)` or `NVL(a, b)` | `COALESCE(a, b)` or `IFNULL(a, b)` | `COALESCE(a, b)` | `COALESCE(a, b)` |
 | Current timestamp | `CURRENT_TIMESTAMP` | `CURRENT_TIMESTAMP()` | `CURRENT_TIMESTAMP()` | `CURRENT_TIMESTAMP()` | `CURRENT_TIMESTAMP` |
 | Substring | `SUBSTRING(s, start, len)` | `SUBSTR(s, start, len)` | `SUBSTR(s, start, len)` | `SUBSTRING(s, start, len)` | `SUBSTRING(s, start, len)` |
@@ -694,7 +714,25 @@ This section maps Ossie standard functions to their equivalents in popular BI to
 | `STDDEV_POP(x)` | `STDEVP(x)` | `STDDEV(X)` | `STDEV.P(x)` | N/A |
 | `VARIANCE(x)` | `VAR(x)` | `VARIANCE(X)` | `VAR.S(x)` | `Variance(x)` |
 | `MEDIAN(x)` | `MEDIAN(x)` | `MEDIAN(X)` | `MEDIAN(x)` | `Median(x)` |
-| `PERCENTILE_CONT(x, 0.75)` | `PERCENTILE(x, 0.75)` | `PERCENTILE(X, 75)` | `PERCENTILE.INC(x, 0.75)` | `Percentile(x, 0.75)` |
+| `PERCENTILE_CONT(0.75) WITHIN GROUP (ORDER BY x)` | `PERCENTILE(x, 0.75)` | `PERCENTILE(X, 75)` | `PERCENTILE.INC(x, 0.75)` | `Percentile(x, 0.75)` |
+
+Two of the DAX mappings are not the same-named function, because DAX treats BLANK
+differently from SQL's NULL:
+
+- `COUNT(x)` maps to `COUNTA`, not `COUNT`. Both count non-blank values, but DAX
+  `COUNT` documents `TRUE`/`FALSE` columns as unsupported, whereas SQL `COUNT(x)`
+  counts non-NULL values of any type. `COUNTA` counts non-blank values of any type.
+- `COUNT(DISTINCT x)` maps to `DISTINCTCOUNTNOBLANK`, not `DISTINCTCOUNT`. SQL
+  excludes NULL from the distinct set, but DAX `DISTINCTCOUNT` counts BLANK as a
+  distinct value, so it is off by one on any nullable column.
+
+Two further differences have no faithful DAX equivalent and should be expected rather
+than worked around:
+
+- Over an empty set the SQL count functions return `0`, while the DAX ones return
+  BLANK. This is intentional in DAX, since it lets a visual hide the empty row.
+- `STDEV.S`, `STDEV.P`, `VAR.S` and `VAR.P` raise an error when fewer than two
+  non-blank rows remain, where SQL yields NULL (sample) or `0` (population).
 
 ### Date Function Mapping
 
@@ -707,6 +745,12 @@ This section maps Ossie standard functions to their equivalents in popular BI to
 | `DATEADD(day, n, d)` | `DATEADD('day', n, d)` | `DATE_ADD(d, n)` (days only) | `DATE(d) + n` or `DATEADD(d, n, DAY)` | `DateAdd(d, n, "day")` |
 | `DATEDIFF(day, d1, d2)` | `DATEDIFF('day', d1, d2)` | `DATE_DIFF(d1, d2)` | `DATEDIFF(d1, d2, DAY)` | `DateDiff(d1, d2, "day")` |
 | `CURRENT_DATE` | `TODAY()` | `TODAY()` | `TODAY()` | `Today()` |
+
+DAX also has a `DATEADD` function, but it is not the equivalent of the scalar SQL
+`DATEADD`: it is a time-intelligence function that returns a *table* of shifted dates
+for the current filter context, and it requires a marked date table with a contiguous
+date range. For a row-level shift, add a number of days to the date directly, or use
+`EDATE` to shift by whole months.
 
 ### String Function Mapping
 

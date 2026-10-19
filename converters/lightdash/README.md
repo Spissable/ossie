@@ -35,6 +35,11 @@ translates between that shape and Ossie.
   maintain in Lightdash. Both Lightdash shapes are read: dbt `schema.yml`
   files with Lightdash `meta`, and Lightdash's own dbt-free model files.
 
+Ossie input and output use the current flat document format: `version`, `name`,
+`datasets`, `relationships`, and `metrics` are at the root. The legacy
+`semantic_model` wrapper is not accepted; migrate each wrapped model into its
+own document before exporting.
+
 Lightdash-only attributes travel in `custom_extensions` under the registered
 vendor token `LIGHTDASH`, so Lightdash → Ossie → Lightdash restores the
 project exactly while every other consumer works from the core vocabulary.
@@ -82,7 +87,13 @@ per dataset, and a starter `my-project/lightdash.config.yml` whose
 `warehouse.type` is derived from `--dialect` (`BIGQUERY`, `SNOWFLAKE`,
 `DATABRICKS`) or given with `--warehouse`; an existing config is left alone.
 Each dataset's `source` becomes the model's `sql_from` verbatim, a table
-reference or a query.
+reference or a query. Model names come from the last identifier of a simple
+source path, with SQL quoting removed. Queries and table identifiers that cannot
+form a safe model name use the dataset's logical `name` instead. Names must
+start with a letter or underscore and contain only letters, digits and
+underscores. Duplicate names (including case-only differences) fail the entire
+export before files are written, in both output formats. For example,
+`sales.orders` and `archive.orders` cannot both export as `orders`.
 
 `-i/--input` and `-o/--output` follow the other converters; the two
 positional forms (`export in out`) work too. Issues (anything lost or
@@ -118,7 +129,7 @@ the dbt flavour has to stash (`sql_filter`, `group_details`,
 
 | Ossie | Lightdash (dbt meta) |
 | ----- | -------------------- |
-| `dataset` | dbt model (`name` = table part of `source`) |
+| `dataset` | dbt model (`name` = unquoted table identifier in a simple `source`, otherwise safe `dataset.name`; collisions are rejected) |
 | `dataset.source` | assembled on import from `--database` / `--schema` / model name |
 | `dataset.primary_key` | model `meta.primary_key` (a single key exports as a string, a composite key as a list) |
 | `ai_context` on datasets, fields and metrics | `ai_hint` on models, dimensions and metrics; a multi-line instruction is a list of hints, and the synonyms / examples of the structured form are rendered as extra hints on export |
@@ -146,8 +157,15 @@ Lightdash SQL is written for the project's warehouse, so `import --dialect`
 labels the emitted expressions with that warehouse's Ossie dialect
 (`BIGQUERY`, `SNOWFLAKE`, `DATABRICKS`); warehouses without an Ossie dialect
 (Postgres, Redshift, ...) keep the default `ANSI_SQL`. `export --dialect`
-prefers that dialect, falls back to `ANSI_SQL`, and takes the first available
-dialect with a `DIALECT_UNAVAILABLE` issue when an expression offers neither.
+prefers that dialect, falls back to `OSSIE_SQL_2026` then `ANSI_SQL`, and takes
+the first available dialect with a `DIALECT_UNAVAILABLE` issue when none match.
+
+Bare column references are qualified using SQLGlot's parser for the selected
+warehouse dialect, without reformatting the SQL. Cast types, date parts,
+function names, literals, comments, and already-qualified references are left
+alone. References inside nested queries retain their own scope. If parsing
+fails, the SQL keeps its bare names and a `COLUMN_QUALIFICATION_SKIPPED` issue
+identifies the affected field or metric; review that expression manually.
 
 ## Input shape
 
@@ -263,8 +281,8 @@ dataset is unrestricted). Encoding metric filters as `CASE WHEN` and
 
 - `unique_keys` — Lightdash has no corresponding concept.
 - `ai_context` and custom extensions on relationships.
-- `dataset.name` when it differs from the source table name: the dbt model is
-  named after the table part of `source`.
+- `dataset.name` when a safe model name can be derived from a simple source:
+  the dbt model is named after that source's unquoted table identifier.
 - Relationships with mismatched `from_columns` / `to_columns` lengths
   (`RELATIONSHIP_COLUMNS_MISMATCHED`), and relationships to datasets missing
   from the document.
@@ -280,7 +298,7 @@ Every loss or approximation is reported as a `ConverterIssue`: on import
 `JOIN_TARGET_UNKNOWN`, `METRIC_FILTER_NOT_PORTABLE`, `ROW_FILTER_NOT_PORTABLE`,
 `EXPRESSION_NOT_PORTABLE`, `METRIC_REFERENCE_INLINED`,
 `ALIAS_REFERENCE_FLATTENED`, `METRIC_NAME_COLLISION`, `SOURCE_UNQUALIFIED`,
-`METRIC_SQL_MISSING`; on export `CROSS_DATASET_METRIC_DROPPED`,
+`METRIC_SQL_MISSING`, `COLUMN_QUALIFICATION_SKIPPED`; on export `CROSS_DATASET_METRIC_DROPPED`,
 `FIELD_REFERENCE_UNJOINED`, `TIME_ROLE_NOT_REPRESENTABLE`,
 `DIMENSION_TYPE_DEFAULTED`, `COLUMN_META_NOT_REPRESENTABLE`, `CATALOG_MODEL_MISSING`, `DIALECT_UNAVAILABLE`,
 `RELATIONSHIP_COLUMNS_MISMATCHED`, `EXTENSION_DATA_INVALID`,
@@ -288,14 +306,49 @@ Every loss or approximation is reported as a `ConverterIssue`: on import
 
 ## Development
 
-```
-uv sync
-uv run pytest
+From the repository root:
+
+```bash
+uv sync --project converters/lightdash --locked
+uv run --project converters/lightdash pytest converters/lightdash/tests
 ```
 
-The exported TPC-DS project compiles with `lightdash compile` (5 explores, 0
-errors). Beyond the unit tests and the TPC-DS round trip, the converter is
-exercised against real Lightdash projects (the public jaffle-shop demo and two
-production projects on BigQuery): every model's meta and every join survive
-Lightdash → Ossie → Lightdash, every uniquely named metric returns with its
-expression unchanged, and the documents pass `validation/validate.py`.
+### Local end-to-end check
+
+This exports the canonical flat TPC-DS document, compiles the generated project
+with the Lightdash CLI, and imports it back into an Ossie document. It needs no
+running Lightdash server or warehouse credentials and does not deploy anything.
+Use an empty output directory so the generated files are easy to inspect.
+
+```bash
+uv run --project converters/lightdash ossie-lightdash export \
+  -i examples/tpcds_semantic_model.yaml -o /tmp/ossie-lightdash-check \
+  --dialect SNOWFLAKE
+lightdash compile --project-dir /tmp/ossie-lightdash-check \
+  --no-warehouse-credentials --no-version-check --no-partial-compilation
+uv run --project converters/lightdash ossie-lightdash import \
+  -i /tmp/ossie-lightdash-check -o /tmp/ossie-lightdash-roundtrip.yaml \
+  --dialect SNOWFLAKE --semantic-model-name tpcds_retail_model
+uv run validation/validate.py /tmp/ossie-lightdash-roundtrip.yaml
+```
+
+Expected: five compiled explores, no compilation errors, and a flat round-trip
+document with five datasets and four relationships. Export reports the known
+`TIME_ROLE_NOT_REPRESENTABLE` warning for the integer `d_year` field; Lightdash
+has no equivalent of that field's explicit time-axis role. Generated models
+and compilation output remain in the selected directory for inspection.
+
+To check the dbt 1.10+ output as well:
+
+```bash
+uv run --project converters/lightdash ossie-lightdash export \
+  -i /tmp/ossie-lightdash-roundtrip.yaml -o /tmp/ossie-lightdash-schema.yml \
+  --format dbt-meta --meta-under-config --dialect SNOWFLAKE
+uv run --project converters/lightdash ossie-lightdash import \
+  -i /tmp/ossie-lightdash-schema.yml -o /tmp/ossie-lightdash-dbt-roundtrip.json \
+  --database tpcds --schema public --dialect SNOWFLAKE
+uv run validation/validate.py /tmp/ossie-lightdash-dbt-roundtrip.json
+```
+
+These checks validate conversion, schema/SQL syntax, and Lightdash compilation.
+They do not execute warehouse queries or verify a deployed project's browser UI.

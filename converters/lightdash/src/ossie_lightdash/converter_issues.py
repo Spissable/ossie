@@ -59,7 +59,7 @@ class ConverterIssueType(Enum):
     # Import: a `${alias.column}` reference to an aliased join was rewritten to
     # the joined dataset; Ossie has no join aliases, so the join path is lost.
     ALIAS_REFERENCE_FLATTENED = "ALIAS_REFERENCE_FLATTENED"
-    # Export: neither the requested dialect nor ANSI_SQL is available for an
+    # Export: neither the requested dialect nor portable/ANSI SQL is available for an
     # expression; the first available dialect is used instead.
     DIALECT_UNAVAILABLE = "DIALECT_UNAVAILABLE"
     # Export: a field expression references a dataset the field's dataset does
@@ -86,10 +86,14 @@ class ConverterIssueType(Enum):
     # Import: a join targets a model that is not in the input, so the
     # relationship would reference an unknown dataset and is skipped.
     JOIN_TARGET_UNKNOWN = "JOIN_TARGET_UNKNOWN"
+    # Import: SQL could not be parsed safely; explicit references are converted,
+    # but bare column names are left as authored.
+    COLUMN_QUALIFICATION_SKIPPED = "COLUMN_QUALIFICATION_SKIPPED"
 
 
 # One line per issue type, for people reading the CLI output.
 ISSUE_EXPLANATIONS = {
+    ConverterIssueType.COLUMN_QUALIFICATION_SKIPPED: "SQL could not be parsed safely; bare column names left unchanged",
     ConverterIssueType.SOURCE_UNQUALIFIED: "no --schema given, so the dataset source is just the model name",
     ConverterIssueType.JOIN_SQL_UNPARSED: "no column pair in sql_on; kept for Lightdash only, no relationship",
     ConverterIssueType.JOIN_STASHED: "chained join, expression join or extra conditions; kept verbatim for Lightdash, relationships derived from the column pairs",
@@ -102,7 +106,7 @@ ISSUE_EXPLANATIONS = {
     ConverterIssueType.EXPRESSION_NOT_PORTABLE: "SQL uses parameters, user attributes or Liquid, which only Lightdash can evaluate; skipped",
     ConverterIssueType.METRIC_REFERENCE_INLINED: "${metric} reference replaced by that metric's expression",
     ConverterIssueType.ALIAS_REFERENCE_FLATTENED: "${alias.column} now points at the joined model; which join was meant is lost",
-    ConverterIssueType.DIALECT_UNAVAILABLE: "neither --dialect nor ANSI_SQL offered; first available dialect used",
+    ConverterIssueType.DIALECT_UNAVAILABLE: "neither --dialect, OSSIE_SQL_2026 nor ANSI_SQL offered; first available dialect used",
     ConverterIssueType.FIELD_REFERENCE_UNJOINED: "expression names a dataset this model does not join; emitted as is",
     ConverterIssueType.METRIC_NAME_COLLISION: "still a duplicate after <model>_<metric>; suffixed",
     ConverterIssueType.METRIC_FILTER_NOT_PORTABLE: "filters kept for Lightdash only; other tools see the unfiltered aggregate",

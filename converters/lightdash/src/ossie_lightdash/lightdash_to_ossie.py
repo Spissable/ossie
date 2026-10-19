@@ -29,6 +29,8 @@ import json
 import re
 from typing import Any, Dict, List, Optional, Set, Tuple
 
+from sqlglot.errors import SqlglotError
+
 from ossie import (
     OssieCustomExtension,
     OssieDataset,
@@ -40,7 +42,6 @@ from ossie import (
     OssieField,
     OssieMetric,
     OssieRelationship,
-    OssieSemanticModel,
 )
 
 from ossie_lightdash.converter_issues import (
@@ -176,11 +177,13 @@ class _ModelContext:
         aliases: Dict[str, str],
         definitions: Dict[str, Tuple[Dict[str, Any], Optional[str]]],
         issues: List[ConverterIssue],
+        dialect: OssieDialect,
     ) -> None:
         self.dataset_name = dataset_name
         self.aliases = aliases
         self.definitions = definitions
         self.issues = issues
+        self.dialect = dialect
         self.column_types: Dict[str, str] = {}
         self.column_names: List[str] = []
         # Datatypes from --catalog, consulted when a column has no authored type.
@@ -205,9 +208,20 @@ class _ModelContext:
             aliases=self.aliases,
             resolve_metric=self.metric_expression,
         )
-        result.expression = qualify_bare_columns(
-            result.expression, self.dataset_name, self.column_names
-        )
+        try:
+            result.expression = qualify_bare_columns(
+                result.expression,
+                self.dataset_name,
+                self.column_names,
+                dialect=self.dialect.value,
+            )
+        except (SqlglotError, ValueError):
+            self.issues.append(
+                ConverterIssue(
+                    issue_type=ConverterIssueType.COLUMN_QUALIFICATION_SKIPPED,
+                    element_name=element_name,
+                )
+            )
         for _ in result.inlined_metrics:
             self.issues.append(
                 ConverterIssue(
@@ -343,14 +357,10 @@ class LightdashToOssieConverter:
 
         document = OssieDocument(
             version="0.2.0.dev0",
-            semantic_model=[
-                OssieSemanticModel(
-                    name=semantic_model_name,
-                    datasets=datasets,
-                    metrics=metrics or None,
-                    relationships=relationships or None,
-                )
-            ],
+            name=semantic_model_name,
+            datasets=datasets,
+            metrics=metrics or None,
+            relationships=relationships or None,
         )
         return ConverterResult(output=document, issues=issues)
 
@@ -398,7 +408,7 @@ class LightdashToOssieConverter:
         for metric_name, definition in (model_meta.get("metrics") or {}).items():
             definitions[metric_name] = (definition, None)
 
-        context = _ModelContext(name, aliases, definitions, issues)
+        context = _ModelContext(name, aliases, definitions, issues, self._dialect)
         context.column_names = [column["name"] for column in model.get("columns") or []]
         if catalog is not None:
             if name in catalog:
